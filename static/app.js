@@ -68,14 +68,20 @@ function apiPost(url, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(function(r) {
-    if (!r.ok) return r.json().then(function(e) { throw new Error(e.detail || r.statusText); });
+    if (!r.ok) return r.text().then(function(text) {
+      try { var e = JSON.parse(text); throw new Error(e.detail || r.statusText); }
+      catch(parseErr) { if (parseErr.message && parseErr.message !== r.statusText) throw parseErr; throw new Error(r.status + ': ' + (text.slice(0, 200) || r.statusText)); }
+    });
     return r.json();
   });
 }
 
 function apiGet(url) {
   return fetch(url).then(function(r) {
-    if (!r.ok) return r.json().then(function(e) { throw new Error(e.detail || r.statusText); });
+    if (!r.ok) return r.text().then(function(text) {
+      try { var e = JSON.parse(text); throw new Error(e.detail || r.statusText); }
+      catch(parseErr) { if (parseErr.message && parseErr.message !== r.statusText) throw parseErr; throw new Error(r.status + ': ' + (text.slice(0, 200) || r.statusText)); }
+    });
     return r.json();
   });
 }
@@ -172,17 +178,53 @@ function TopNav(props) {
 }
 
 // ---------------------------------------------------------------------------
+// Column builder helper — adds sort + filter to every column
+// ---------------------------------------------------------------------------
+function buildTableColumns(rows, columnNames) {
+  if (!columnNames || !columnNames.length) return [];
+  return columnNames.map(function(col) {
+    // Collect unique non-null values for filter dropdown (max 50)
+    var uniqueVals = {};
+    (rows || []).forEach(function(r) {
+      var v = r[col];
+      if (v != null && v !== '') uniqueVals[String(v)] = true;
+    });
+    var filterValues = Object.keys(uniqueVals).sort().slice(0, 50);
+
+    var cfg = {
+      title: col,
+      dataIndex: col,
+      key: col,
+      ellipsis: true,
+      width: col === 'Date & Time' ? 170 : (col === 'Event' ? 200 : 150),
+      sorter: function(a, b) {
+        var va = a[col] || '';
+        var vb = b[col] || '';
+        return String(va).localeCompare(String(vb));
+      },
+      filters: filterValues.map(function(v) { return { text: v.length > 40 ? v.slice(0, 37) + '...' : v, value: v }; }),
+      onFilter: function(value, record) { return String(record[col] || '') === value; },
+      filterSearch: filterValues.length > 10,
+    };
+    if (col === 'Event') {
+      cfg.render = function(val) {
+        if (!val) return '\u2014';
+        return h(Tag, { color: 'purple' }, val);
+      };
+    }
+    return cfg;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Export Tab
 // ---------------------------------------------------------------------------
 function ExportTab(props) {
   var config = props.config;
   var useDummy = props.useDummy;
 
-  var _host = useState(config.dominoHost || '');
-  var dominoHost = _host[0]; var setDominoHost = _host[1];
-
-  var _ds = useState(config.datasets && config.datasets.length ? config.datasets[0].path : '');
-  var datasetPath = _ds[0]; var setDatasetPath = _ds[1];
+  // Host auto-detected from backend env or browser origin
+  var dominoHost = config.dominoHost || window.location.origin;
 
   var _dates = useState([
     dayjs().subtract(30, 'day'),
@@ -205,18 +247,6 @@ function ExportTab(props) {
   var _pdfLoading = useState(false);
   var pdfLoading = _pdfLoading[0]; var setPdfLoading = _pdfLoading[1];
 
-  // Sync config when it changes
-  useEffect(function() {
-    if (config.dominoHost) setDominoHost(config.dominoHost);
-    if (config.datasets && config.datasets.length) setDatasetPath(config.datasets[0].path);
-  }, [config]);
-
-  var datasetOptions = useMemo(function() {
-    return (config.datasets || []).map(function(d) {
-      return { label: d.label, value: d.path };
-    });
-  }, [config.datasets]);
-
   function handleExport() {
     if (useDummy) {
       setLoading(true);
@@ -234,7 +264,6 @@ function ExportTab(props) {
 
     var body = {
       dominoHost: dominoHost,
-      datasetPath: datasetPath,
       startDate: dateRange && dateRange[0] ? dateRange[0].format('YYYY-MM-DD') : undefined,
       endDate: dateRange && dateRange[1] ? dateRange[1].format('YYYY-MM-DD') : undefined,
       maxRows: maxRows,
@@ -256,30 +285,8 @@ function ExportTab(props) {
       });
   }
 
-  // Build table columns from result
   var columns = useMemo(function() {
-    if (!result || !result.columns) return [];
-    return result.columns.map(function(col) {
-      var cfg = {
-        title: col,
-        dataIndex: col,
-        key: col,
-        ellipsis: true,
-        width: col === 'Date & Time' ? 170 : (col === 'Event' ? 200 : 150),
-        sorter: function(a, b) {
-          var va = a[col] || '';
-          var vb = b[col] || '';
-          return String(va).localeCompare(String(vb));
-        },
-      };
-      if (col === 'Event') {
-        cfg.render = function(val) {
-          if (!val) return '\u2014';
-          return h(Tag, { color: 'purple' }, val);
-        };
-      }
-      return cfg;
-    });
+    return buildTableColumns(result ? result.previewRows : [], result ? result.columns : []);
   }, [result]);
 
   var tableData = useMemo(function() {
@@ -296,26 +303,6 @@ function ExportTab(props) {
         h('span', { className: 'panel-title' }, 'Configuration')
       ),
       h('div', { className: 'config-grid' },
-        h('div', { className: 'config-field' },
-          h('label', null, 'Domino Host'),
-          h(Input, {
-            value: dominoHost,
-            onChange: function(e) { setDominoHost(e.target.value); },
-            placeholder: 'https://your.domino.tech',
-            disabled: useDummy,
-          })
-        ),
-        h('div', { className: 'config-field' },
-          h('label', null, 'Destination Dataset'),
-          h(Select, {
-            value: datasetPath || undefined,
-            onChange: setDatasetPath,
-            options: datasetOptions,
-            placeholder: useDummy ? 'local/audit-exports' : 'Select dataset',
-            disabled: useDummy,
-            style: { width: '100%' },
-          })
-        ),
         h('div', { className: 'config-field' },
           h('label', null, 'Date Range'),
           h(RangePicker, {
@@ -369,16 +356,15 @@ function ExportTab(props) {
       // Stats
       h('div', { className: 'stats-row' },
         h(StatCard, { label: 'Events Fetched', value: (result.eventCount || 0).toLocaleString(), color: 'primary' }),
-        h(StatCard, { label: 'Rows Generated', value: (result.rowCount || 0).toLocaleString(), color: 'info' }),
-        h(StatCard, { label: 'Files Saved', value: (result.filesSaved || []).length, color: 'success' })
+        h(StatCard, { label: 'Rows Generated', value: (result.rowCount || 0).toLocaleString(), color: 'info' })
       ),
 
-      // Files saved
-      result.filesSaved && result.filesSaved.length ? h('div', { className: 'panel', style: { marginBottom: 16 } },
+      // Data table with download buttons
+      h('div', { className: 'panel' },
         h('div', { className: 'panel-header' },
-          h('span', { className: 'panel-title' }, 'Files Saved'),
+          h('span', { className: 'panel-title' }, 'Results'),
           h('div', { className: 'panel-header-actions' },
-            (result.csvData || result.previewRows) ? h(Button, {
+            h(Button, {
               type: 'primary',
               size: 'small',
               onClick: function() {
@@ -386,8 +372,8 @@ function ExportTab(props) {
                 var csv = result.csvData || rowsToCsv(result.previewRows, result.columns);
                 downloadCsv(csv, 'audit_full_metadata_friendly_' + today + '.csv');
               },
-            }, 'Download CSV') : null,
-            result.previewRows && result.previewRows.length ? h(Button, {
+            }, 'Download CSV'),
+            h(Button, {
               size: 'small',
               loading: pdfLoading,
               onClick: function() {
@@ -403,24 +389,8 @@ function ExportTab(props) {
                   .then(function() { setPdfLoading(false); message.success('PDF downloaded'); })
                   .catch(function(err) { setPdfLoading(false); message.error(err.message || 'PDF export failed'); });
               },
-            }, 'Export PDF') : null
+            }, 'Export PDF')
           )
-        ),
-        h('div', { className: 'files-list' },
-          result.filesSaved.map(function(f, i) {
-            return h('div', { key: i, className: 'file-item' },
-              h('span', { className: 'file-icon' }, f.endsWith('.json') ? '{ }' : f.endsWith('.csv') ? 'CSV' : 'PQ'),
-              h('span', { className: 'file-path' }, f)
-            );
-          })
-        )
-      ) : null,
-
-      // Preview table
-      h('div', { className: 'panel' },
-        h('div', { className: 'panel-header' },
-          h('span', { className: 'panel-title' }, 'Preview'),
-          h('span', { className: 'panel-subtitle' }, 'First 200 rows')
         ),
         h(Table, {
           dataSource: tableData,
@@ -432,284 +402,6 @@ function ExportTab(props) {
         })
       )
     ) : null
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Explore Tab
-// ---------------------------------------------------------------------------
-function ExploreTab(props) {
-  var config = props.config;
-  var useDummy = props.useDummy;
-
-  var _ds = useState(config.datasets && config.datasets.length ? config.datasets[0].path : '');
-  var datasetPath = _ds[0]; var setDatasetPath = _ds[1];
-
-  var _dates = useState([dayjs().subtract(7, 'day'), dayjs()]);
-  var dateRange = _dates[0]; var setDateRange = _dates[1];
-
-  var _limit = useState(5000);
-  var limit = _limit[0]; var setLimit = _limit[1];
-
-  var _loading = useState(false);
-  var loading = _loading[0]; var setLoading = _loading[1];
-
-  var _result = useState(null);
-  var result = _result[0]; var setResult = _result[1];
-
-  var _error = useState(null);
-  var error = _error[0]; var setError = _error[1];
-
-  var _tableFilter = useState(null);
-  var tableFilter = _tableFilter[0]; var setTableFilter = _tableFilter[1];
-
-  var eventChartRef = useRef(null);
-  var actorChartRef = useRef(null);
-
-  useEffect(function() {
-    if (config.datasets && config.datasets.length) setDatasetPath(config.datasets[0].path);
-  }, [config.datasets]);
-
-  var datasetOptions = useMemo(function() {
-    return (config.datasets || []).map(function(d) { return { label: d.label, value: d.path }; });
-  }, [config.datasets]);
-
-  function handleExplore() {
-    if (useDummy) {
-      setLoading(true);
-      setTimeout(function() {
-        var data = generateMockExploreResult();
-        setResult(data);
-        setLoading(false);
-        setTableFilter(null);
-      }, 800);
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    setTableFilter(null);
-
-    apiPost('api/explore', {
-      datasetPath: datasetPath,
-      startDate: dateRange && dateRange[0] ? dateRange[0].format('YYYY-MM-DD') : '',
-      endDate: dateRange && dateRange[1] ? dateRange[1].format('YYYY-MM-DD') : '',
-      limit: limit,
-    })
-    .then(function(data) {
-      setResult(data);
-      setLoading(false);
-      if (data.status === 'empty') message.info(data.message);
-    })
-    .catch(function(err) {
-      setError(err.message);
-      setLoading(false);
-    });
-  }
-
-  // Render charts when result changes
-  useEffect(function() {
-    if (!result || result.status !== 'ok') return;
-
-    // Event rollup chart
-    if (result.eventRollup && result.eventRollup.length && eventChartRef.current) {
-      var eventData = result.eventRollup.slice(0, 15).map(function(r) {
-        return { name: r.Event || 'Unknown', y: r.count };
-      });
-      Highcharts.chart(eventChartRef.current, {
-        chart: { type: 'bar', height: 320 },
-        title: { text: 'Top Events', style: { fontSize: '14px', fontWeight: '600' } },
-        xAxis: { categories: eventData.map(function(d) { return d.name; }), labels: { style: { fontSize: '11px' } } },
-        yAxis: { title: { text: null }, allowDecimals: false },
-        series: [{ name: 'Count', data: eventData.map(function(d) { return d.y; }), colorByPoint: false }],
-        legend: { enabled: false },
-        credits: { enabled: false },
-        plotOptions: {
-          bar: {
-            cursor: 'pointer',
-            point: {
-              events: {
-                click: function() {
-                  setTableFilter(tableFilter && tableFilter.value === this.category
-                    ? null : { type: 'event', value: this.category });
-                }
-              }
-            }
-          }
-        },
-      });
-    }
-
-    // Actor rollup chart
-    if (result.actorRollup && result.actorRollup.length && actorChartRef.current) {
-      var actorData = result.actorRollup.slice(0, 10).map(function(r) {
-        return { name: r.actor || 'Unknown', y: r.count };
-      });
-      Highcharts.chart(actorChartRef.current, {
-        chart: { type: 'pie', height: 320 },
-        title: { text: 'Top Actors', style: { fontSize: '14px', fontWeight: '600' } },
-        series: [{
-          name: 'Events',
-          data: actorData,
-          innerSize: '50%',
-        }],
-        tooltip: { pointFormat: '<b>{point.y}</b> events ({point.percentage:.1f}%)' },
-        credits: { enabled: false },
-        plotOptions: {
-          pie: {
-            cursor: 'pointer',
-            dataLabels: { enabled: true, format: '{point.name}: {point.y}', style: { fontSize: '11px' } },
-            point: {
-              events: {
-                click: function() {
-                  setTableFilter(tableFilter && tableFilter.value === this.name
-                    ? null : { type: 'actor', value: this.name });
-                }
-              }
-            }
-          }
-        },
-      });
-    }
-  }, [result]);
-
-  // Table data filtered by chart click
-  var filteredRows = useMemo(function() {
-    if (!result || !result.rows) return [];
-    var rows = result.rows;
-    if (tableFilter) {
-      if (tableFilter.type === 'event') {
-        rows = rows.filter(function(r) { return r['Event'] === tableFilter.value; });
-      } else if (tableFilter.type === 'actor') {
-        rows = rows.filter(function(r) { return r['User Name'] === tableFilter.value; });
-      }
-    }
-    return rows.map(function(r, i) { return Object.assign({}, r, { _key: i }); });
-  }, [result, tableFilter]);
-
-  // Build dynamic columns
-  var columns = useMemo(function() {
-    if (!result || !result.columns) return [];
-    return result.columns.map(function(col) {
-      var cfg = {
-        title: col,
-        dataIndex: col,
-        key: col,
-        ellipsis: true,
-        width: col === 'Date & Time' ? 170 : (col === 'Event' ? 200 : 150),
-        sorter: function(a, b) {
-          var va = a[col] || '';
-          var vb = b[col] || '';
-          return String(va).localeCompare(String(vb));
-        },
-      };
-      if (col === 'Event') {
-        // Unique values for filter
-        var unique = {};
-        (result.rows || []).forEach(function(r) { if (r[col]) unique[r[col]] = true; });
-        cfg.filters = Object.keys(unique).sort().map(function(v) { return { text: v, value: v }; });
-        cfg.onFilter = function(value, record) { return record[col] === value; };
-        cfg.render = function(val) { return val ? h(Tag, { color: 'purple' }, val) : '\u2014'; };
-      }
-      if (col === 'User Name') {
-        var uniqueUsers = {};
-        (result.rows || []).forEach(function(r) { if (r[col]) uniqueUsers[r[col]] = true; });
-        cfg.filters = Object.keys(uniqueUsers).sort().map(function(v) { return { text: v, value: v }; });
-        cfg.onFilter = function(value, record) { return record[col] === value; };
-      }
-      return cfg;
-    });
-  }, [result]);
-
-  var filterLabel = tableFilter ? tableFilter.value : null;
-
-  return h('div', { className: 'tab-content' },
-    // Controls
-    h('div', { className: 'panel' },
-      h('div', { className: 'panel-header' },
-        h('span', { className: 'panel-title' }, 'Explore Exported Data')
-      ),
-      h('div', { className: 'explore-controls' },
-        h('div', { className: 'config-field' },
-          h('label', null, 'Dataset'),
-          h(Select, {
-            value: datasetPath || undefined,
-            onChange: setDatasetPath,
-            options: datasetOptions,
-            placeholder: useDummy ? 'local/audit-exports' : 'Select dataset',
-            disabled: useDummy,
-            style: { width: '100%' },
-          })
-        ),
-        h('div', { className: 'config-field' },
-          h('label', null, 'Date Range'),
-          h(RangePicker, { value: dateRange, onChange: setDateRange, style: { width: '100%' } })
-        ),
-        h('div', { className: 'config-field' },
-          h('label', null, 'Preview Limit'),
-          h(InputNumber, { value: limit, onChange: setLimit, min: 100, max: 50000, step: 100, style: { width: '100%' } })
-        ),
-        h('div', { className: 'config-field config-field-action' },
-          h(Button, { type: 'primary', onClick: handleExplore, loading: loading }, 'Query Data')
-        )
-      )
-    ),
-
-    error ? h(Alert, { type: 'error', message: error, showIcon: true, closable: true, onClose: function() { setError(null); }, style: { marginBottom: 16 } }) : null,
-
-    loading ? h('div', { className: 'loading-container' }, h(Spin, { size: 'large' })) : null,
-
-    result && result.status === 'ok' ? h('div', null,
-      // Stats
-      h('div', { className: 'stats-row' },
-        h(StatCard, { label: 'Total Rows', value: (result.totalRows || 0).toLocaleString(), color: 'primary' }),
-        h(StatCard, { label: 'Unique Events', value: (result.eventRollup || []).length, color: 'info' }),
-        h(StatCard, { label: 'Unique Actors', value: (result.actorRollup || []).length, color: 'success' })
-      ),
-
-      // Charts
-      h('div', { className: 'charts-row' },
-        h('div', { className: 'chart-panel' },
-          h('div', { ref: eventChartRef, style: { width: '100%', minHeight: 320 } })
-        ),
-        h('div', { className: 'chart-panel' },
-          h('div', { ref: actorChartRef, style: { width: '100%', minHeight: 320 } })
-        )
-      ),
-
-      // Table
-      h('div', { className: 'panel' },
-        h('div', { className: 'panel-header' },
-          h('span', { className: 'panel-title' }, filterLabel ? 'Events \u2014 ' + filterLabel : 'All Events'),
-          h('div', { className: 'panel-header-actions' },
-            filterLabel ? h(Tag, {
-              closable: true,
-              onClose: function() { setTableFilter(null); },
-              color: 'purple',
-            }, filterLabel) : null,
-            h(Button, {
-              size: 'small',
-              onClick: function() {
-                var csv = rowsToCsv(filteredRows, result.columns);
-                var ts = dayjs().format('YYYYMMDD_HHmmss');
-                downloadCsv(csv, 'audit_subset_' + ts + '.csv');
-              },
-            }, 'Export CSV')
-          )
-        ),
-        h(Table, {
-          dataSource: filteredRows,
-          columns: columns,
-          rowKey: '_key',
-          size: 'small',
-          scroll: { x: 'max-content', y: 500 },
-          pagination: { pageSize: 50, showSizeChanger: true, showTotal: function(t) { return t + ' rows'; } },
-        })
-      )
-    ) : null,
-
-    result && result.status === 'empty' ? h(Empty, { description: result.message }) : null
   );
 }
 
@@ -942,7 +634,7 @@ function LoginAuditTab(props) {
       type: 'warning',
       showIcon: true,
       message: 'Keycloak Not Configured',
-      description: 'Set KEYCLOAK_HOST and KEYCLOAK_PASSWORD environment variables to connect to your Domino Keycloak instance. Using dummy data for now.',
+      description: 'Set KEYCLOAK_PASSWORD in your Domino environment variables. The Keycloak host is auto-detected on most Domino deployments. Using dummy data for now.',
       style: { marginBottom: 16 },
     }) : null,
 
@@ -1091,9 +783,8 @@ function AboutPanel() {
           h('li', null, 'Uses the official Domino Audit Trail API'),
           h('li', null, h('strong', null, 'Login Audit tab'), ' queries Keycloak for login/logout events (21 CFR Part 11 compliance)'),
           h('li', null, 'Tracks successful and failed authentication attempts with IP, session, and user details'),
-          h('li', null, 'Data is written to a Domino Dataset you select at runtime'),
-          h('li', null, 'Metadata is flattened dynamically \u2014 new Domino fields appear automatically'),
-          h('li', null, 'Explore tab queries Parquet files with DuckDB for fast rollups')
+          h('li', null, 'Export data as CSV or 21 CFR Part 11 compliant PDF reports'),
+          h('li', null, 'Metadata is flattened dynamically \u2014 new Domino fields appear automatically')
         ),
         h('p', { className: 'about-disclaimer' }, 'This is not an official Domino product. Provided as-is without official support.')
       ),
@@ -1108,7 +799,6 @@ function AboutPanel() {
 function App() {
   var _config = useState({
     dominoHost: '',
-    datasets: [],
     projectOwner: '',
     projectName: '',
     hasApiKey: false,
@@ -1125,11 +815,14 @@ function App() {
   useEffect(function() {
     apiGet('api/config')
       .then(function(data) {
+        // Auto-fill host from browser origin if backend didn't detect one
+        if (!data.dominoHost) {
+          data.dominoHost = window.location.origin;
+        }
         setConfig(data);
         setConnected(true);
-        // Stay in dummy mode if no datasets or host detected (not on Domino)
-        var onDomino = data.datasets && data.datasets.length > 0 && data.dominoHost;
-        setUseDummy(!onDomino);
+        // Stay in dummy mode if no API key (not on Domino)
+        setUseDummy(!data.hasApiKey);
       })
       .catch(function() {
         setConfig(MOCK_CONFIG);
@@ -1163,11 +856,6 @@ function App() {
       key: 'export',
       label: 'Export',
       children: h(ExportTab, { config: effectiveConfig, useDummy: useDummy }),
-    },
-    {
-      key: 'explore',
-      label: 'Explore',
-      children: h(ExploreTab, { config: effectiveConfig, useDummy: useDummy }),
     },
     {
       key: 'login-audit',

@@ -4,7 +4,6 @@
 import os
 import json
 import time
-import glob
 import datetime
 from urllib.parse import urlparse
 
@@ -20,7 +19,6 @@ app = FastAPI()
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-DEFAULT_DATASETS_ROOT = "/domino/datasets"
 PAGE_SIZE = 1000
 
 # ---------------------------------------------------------------------------
@@ -87,32 +85,6 @@ def normalize_domino_host(value: str) -> str:
     except Exception:
         pass
     return v.rstrip("/")
-
-
-# ---------------------------------------------------------------------------
-# Dataset helpers
-# ---------------------------------------------------------------------------
-
-def list_mounted_datasets(root_dir=DEFAULT_DATASETS_ROOT, require_writable=True):
-    results = []
-    if not os.path.isdir(root_dir):
-        return results
-    try:
-        for owner in sorted(os.listdir(root_dir)):
-            owner_path = os.path.join(root_dir, owner)
-            if not os.path.isdir(owner_path):
-                continue
-            for ds_name in sorted(os.listdir(owner_path)):
-                ds_path = os.path.join(owner_path, ds_name)
-                if not os.path.isdir(ds_path):
-                    continue
-                if require_writable and not os.access(ds_path, os.W_OK):
-                    continue
-                label = f"{owner}/{ds_name}"
-                results.append({"label": label, "path": ds_path})
-    except Exception:
-        return []
-    return results
 
 
 # ---------------------------------------------------------------------------
@@ -241,13 +213,30 @@ LOGIN_EVENT_TYPES = ["LOGIN", "LOGIN_ERROR", "LOGOUT", "LOGOUT_ERROR"]
 
 
 def _get_keycloak_admin():
-    """Create a KeycloakAdmin client using env vars. Returns (admin, realm)."""
+    """Create a KeycloakAdmin client using env vars with auto-detection fallback.
+    Returns (admin, realm)."""
     from keycloak import KeycloakAdmin as KCAdmin
 
     host = os.environ.get("KEYCLOAK_HOST", "")
     username = os.environ.get("KEYCLOAK_USERNAME", "keycloak")
     password = os.environ.get("KEYCLOAK_PASSWORD", "")
     realm = os.environ.get("KEYCLOAK_REALM", "DominoRealm")
+
+    # Auto-detect Keycloak host from common Domino internal service URLs
+    if not host:
+        candidates = [
+            "http://keycloak-http.domino-platform:80",
+            "http://keycloak-http.domino-platform.svc.cluster.local:80",
+            "http://keycloak-http:80",
+        ]
+        for candidate in candidates:
+            try:
+                r = requests.get(candidate + "/auth/", timeout=2)
+                if r.status_code < 500:
+                    host = candidate
+                    break
+            except Exception:
+                continue
 
     if not host or not password:
         return None, realm
@@ -387,11 +376,22 @@ def flatten_keycloak_events(events, user_map=None):
 
 
 def keycloak_available():
-    """Check if Keycloak env vars are configured."""
-    return bool(
-        os.environ.get("KEYCLOAK_HOST")
-        and os.environ.get("KEYCLOAK_PASSWORD")
-    )
+    """Check if Keycloak is reachable (env vars or auto-detected host + password)."""
+    if os.environ.get("KEYCLOAK_PASSWORD"):
+        if os.environ.get("KEYCLOAK_HOST"):
+            return True
+        # Try auto-detect
+        for candidate in [
+            "http://keycloak-http.domino-platform:80",
+            "http://keycloak-http.domino-platform.svc.cluster.local:80",
+        ]:
+            try:
+                r = requests.get(candidate + "/auth/", timeout=2)
+                if r.status_code < 500:
+                    return True
+            except Exception:
+                continue
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -400,29 +400,9 @@ def keycloak_available():
 
 @app.get("/api/config")
 def get_config():
-    """Return detected host, datasets, and project context."""
-    datasets = list_mounted_datasets()
-    # Deduplicate, prefer local/*
-    temp_map = {}
-    for ds in datasets:
-        label, path = ds["label"], ds["path"]
-        if label in temp_map:
-            existing = temp_map[label]
-            if existing.startswith("/domino/datasets/local/"):
-                continue
-            if path.startswith("/domino/datasets/local/"):
-                temp_map[label] = path
-        else:
-            temp_map[label] = path
-
-    ds_list = [{"label": k, "path": v} for k, v in temp_map.items()]
-    filtered = [d for d in ds_list if d["label"].startswith("local/")]
-    if not filtered:
-        filtered = ds_list
-
+    """Return detected host and project context."""
     return {
         "dominoHost": get_default_domino_host(),
-        "datasets": filtered,
         "projectOwner": os.environ.get("DOMINO_PROJECT_OWNER", ""),
         "projectName": os.environ.get("DOMINO_PROJECT_NAME", ""),
         "hasApiKey": bool(os.environ.get("DOMINO_USER_API_KEY")),
@@ -432,7 +412,7 @@ def get_config():
 
 @app.post("/api/export")
 def run_export(request_body: dict):
-    """Run the audit trail export and stream progress via SSE."""
+    """Run the audit trail export — returns data for browser download."""
     domino_host = normalize_domino_host(
         request_body.get("dominoHost") or get_default_domino_host()
     )
@@ -443,7 +423,6 @@ def run_export(request_body: dict):
     if not api_key:
         raise HTTPException(400, "Missing Domino User API Key.")
 
-    dataset_path = request_body.get("datasetPath", "")
     start_date_str = request_body.get("startDate")
     end_date_str = request_body.get("endDate")
     max_rows = int(request_body.get("maxRows", 1_000_000))
@@ -456,8 +435,6 @@ def run_export(request_body: dict):
         datetime.date.fromisoformat(end_date_str) if end_date_str else
         datetime.date.today()
     )
-
-    today = datetime.datetime.utcnow().strftime("%Y%m%d")
 
     # Fetch events
     try:
@@ -491,64 +468,15 @@ def run_export(request_body: dict):
             .reset_index(drop=True)
         )
 
-    files_saved = []
-
-    # Save to dataset if path provided and writable
-    if dataset_path and os.path.isdir(dataset_path) and os.access(dataset_path, os.W_OK):
-        # JSON
-        json_path = os.path.join(dataset_path, f"audit_full_metadata_{today}.json")
-        with open(json_path, "w") as f:
-            json.dump(events, f, indent=2)
-        files_saved.append(json_path)
-
-        # Parquet
-        try:
-            parquet_root = os.path.join(dataset_path, "parquet")
-            os.makedirs(parquet_root, exist_ok=True)
-            if "Date & Time" in df.columns:
-                df["_date"] = pd.to_datetime(
-                    df["Date & Time"], errors="coerce"
-                ).dt.date.astype(str)
-            else:
-                df["_date"] = today
-            for part_date, part_df in df.groupby("_date"):
-                day_dir = os.path.join(
-                    parquet_root, f"date={part_date.replace('-', '')}"
-                )
-                os.makedirs(day_dir, exist_ok=True)
-                pq_path = os.path.join(
-                    day_dir, f"audit_full_metadata_{today}.parquet"
-                )
-                part_df.drop(columns=["_date"], errors="ignore").to_parquet(
-                    pq_path, index=False
-                )
-            files_saved.append(parquet_root)
-        except Exception as e:
-            print(f"Parquet write skipped: {e}")
-
-        # CSV
-        csv_path = os.path.join(
-            dataset_path, f"audit_full_metadata_friendly_{today}.csv"
-        )
-        df_out = df.drop(columns=["_date"], errors="ignore")
-        df_out.to_csv(csv_path, index=False)
-        files_saved.append(csv_path)
-
-    # Always return CSV data for browser download
-    csv_data = df.drop(columns=["_date"], errors="ignore").to_csv(index=False)
+    csv_data = df.to_csv(index=False)
 
     return {
         "status": "ok",
         "eventCount": len(events),
         "rowCount": len(df),
-        "filesSaved": files_saved,
         "csvData": csv_data,
-        "previewRows": json.loads(
-            df.drop(columns=["_date"], errors="ignore").head(200).to_json(
-                orient="records"
-            )
-        ),
-        "columns": list(df.drop(columns=["_date"], errors="ignore").columns),
+        "previewRows": json.loads(df.head(200).to_json(orient="records")),
+        "columns": list(df.columns),
     }
 
 
@@ -815,71 +743,6 @@ def get_login_events(request_body: dict):
         "hourlyRollup": hourly_rollup,
         "warning": error_msg,
     }
-
-
-@app.post("/api/explore")
-def explore_data(request_body: dict):
-    """Query previously exported Parquet files."""
-    dataset_path = request_body.get("datasetPath", "")
-    start_date = request_body.get("startDate", "")
-    end_date = request_body.get("endDate", "")
-    limit = int(request_body.get("limit", 5000))
-
-    parquet_dir = os.path.join(dataset_path, "parquet") if dataset_path else ""
-    if not parquet_dir or not os.path.isdir(parquet_dir):
-        return {"status": "empty", "message": "No parquet directory found.", "rows": [], "columns": []}
-
-    parquet_glob = os.path.join(parquet_dir, "**", "*.parquet")
-    files = glob.glob(parquet_glob, recursive=True)
-    if not files:
-        return {"status": "empty", "message": "No Parquet files found. Run an export first.", "rows": [], "columns": []}
-
-    try:
-        import duckdb
-        con = duckdb.connect(database=":memory:")
-        base_from = f"read_parquet('{parquet_glob}', union_by_name=true)"
-
-        where_clauses = [
-            "strptime(\"Date & Time\", '%Y-%m-%d %H:%M:%S') IS NOT NULL",
-        ]
-        params = []
-        if start_date and end_date:
-            where_clauses.append(
-                "strptime(\"Date & Time\", '%Y-%m-%d %H:%M:%S') BETWEEN ? AND ?"
-            )
-            params = [f"{start_date} 00:00:00", f"{end_date} 23:59:59"]
-
-        where_sql = " AND ".join(where_clauses)
-
-        # Preview
-        query = f"""
-            SELECT * FROM {base_from}
-            WHERE {where_sql}
-            ORDER BY strptime("Date & Time", '%Y-%m-%d %H:%M:%S') DESC
-            LIMIT {int(limit)}
-        """
-        df = con.execute(query, params).df()
-
-        # Event rollup
-        q_events = f'SELECT "Event", COUNT(*) AS count FROM {base_from} WHERE {where_sql} GROUP BY 1 ORDER BY 2 DESC LIMIT 20'
-        df_events = con.execute(q_events, params).df()
-
-        # Actor rollup
-        q_actors = f'SELECT "User Name" AS actor, COUNT(*) AS count FROM {base_from} WHERE {where_sql} GROUP BY 1 ORDER BY 2 DESC LIMIT 20'
-        df_actors = con.execute(q_actors, params).df()
-
-        return {
-            "status": "ok",
-            "rows": json.loads(df.to_json(orient="records")),
-            "columns": list(df.columns),
-            "totalRows": len(df),
-            "eventRollup": json.loads(df_events.to_json(orient="records")),
-            "actorRollup": json.loads(df_actors.to_json(orient="records")),
-        }
-    except ImportError:
-        raise HTTPException(500, "DuckDB not installed. Add duckdb to requirements.txt.")
-    except Exception as e:
-        raise HTTPException(500, f"Query failed: {e}")
 
 
 # ---------------------------------------------------------------------------
