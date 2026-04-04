@@ -1,0 +1,355 @@
+/* ============================================================
+   Domino Audit Trail Exporter — Styles
+   ============================================================ */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: Inter, Lato, 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  background: #FAFAFA;
+  color: #2E2E38;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- Top Navigation ---- */
+.top-nav {
+  height: 44px;
+  background: #2E2E38;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.top-nav-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.top-nav-logo {
+  height: 24px;
+  width: auto;
+}
+
+.top-nav-title {
+  color: #FFFFFF;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.top-nav-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.top-nav-context {
+  color: #8F8FA3;
+  font-size: 12px;
+}
+
+.dummy-data-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #FFFFFF;
+  font-size: 12px;
+}
+
+/* ---- App Body ---- */
+.app-container {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-body {
+  max-width: 1400px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 20px 24px;
+  flex: 1;
+}
+
+/* ---- Tabs ---- */
+.ant-tabs-card > .ant-tabs-nav .ant-tabs-tab {
+  border-radius: 8px 8px 0 0;
+  font-weight: 500;
+}
+
+/* ---- Tab Content ---- */
+.tab-content {
+  padding: 4px 0;
+}
+
+/* ---- Panels ---- */
+.panel {
+  background: #FFFFFF;
+  border: 1px solid #E0E0E0;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #F0F0F0;
+}
+
+.panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #2E2E38;
+}
+
+.panel-subtitle {
+  font-size: 12px;
+  color: #8F8FA3;
+}
+
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- Config Grid ---- */
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  padding: 16px;
+}
+
+.config-field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: #65657B;
+  margin-bottom: 4px;
+}
+
+.config-field-action {
+  display: flex;
+  align-items: flex-end;
+}
+
+/* ---- Explore Controls ---- */
+.explore-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr 120px auto;
+  gap: 16px;
+  padding: 16px;
+  align-items: end;
+}
+
+/* ---- Stats Row ---- */
+.stats-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stat-card {
+  flex: 1;
+  background: #FFFFFF;
+  border: 1px solid #E0E0E0;
+  border-radius: 8px;
+  padding: 16px;
+  min-width: 0;
+}
+
+.stat-card-clickable {
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.stat-card-clickable:hover {
+  transform: translateY(-2px);
+  filter: brightness(0.97);
+}
+
+.stat-card-active {
+  outline: 2px solid #543FDE;
+  outline-offset: -2px;
+}
+
+.stat-card-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #65657B;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.stat-card-value {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #2E2E38;
+}
+
+.stat-card-value.primary { color: #543FDE; }
+.stat-card-value.info { color: #0070CC; }
+.stat-card-value.success { color: #28A464; }
+.stat-card-value.warning { color: #CCB718; }
+.stat-card-value.danger { color: #C20A29; }
+.stat-card-value.error { color: #C20A29; }
+
+.stat-card-sub {
+  font-size: 12px;
+  color: #8F8FA3;
+  margin-top: 2px;
+}
+
+/* ---- Charts ---- */
+.charts-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.chart-panel {
+  background: #FFFFFF;
+  border: 1px solid #E0E0E0;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+/* ---- Files List ---- */
+.files-list {
+  padding: 12px 16px;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 13px;
+  border-bottom: 1px solid #F5F5F5;
+}
+
+.file-item:last-child {
+  border-bottom: none;
+}
+
+.file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 22px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #FFFFFF;
+  background: #543FDE;
+  flex-shrink: 0;
+}
+
+.file-path {
+  color: #65657B;
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* ---- Loading ---- */
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 0;
+  gap: 16px;
+  color: #65657B;
+}
+
+/* ---- About ---- */
+.about-content {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #65657B;
+}
+
+.about-content ul {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+
+.about-content li {
+  margin-bottom: 4px;
+}
+
+.about-disclaimer {
+  margin-top: 12px;
+  font-style: italic;
+  color: #8F8FA3;
+}
+
+/* ---- Global Filter Bar ---- */
+.global-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: #FAFAFA;
+  border: 1px solid #E0E0E0;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.global-filter-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8F8FA3;
+  letter-spacing: 0.5px;
+}
+
+/* ---- Table tweaks ---- */
+.ant-table-wrapper {
+  padding: 0 0 8px 0;
+}
+
+.ant-table-thead > tr > th {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+/* ---- Responsive ---- */
+@media (max-width: 1024px) {
+  .config-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .explore-controls {
+    grid-template-columns: 1fr 1fr;
+  }
+  .charts-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .config-grid {
+    grid-template-columns: 1fr;
+  }
+  .explore-controls {
+    grid-template-columns: 1fr;
+  }
+  .stats-row {
+    flex-direction: column;
+  }
+}

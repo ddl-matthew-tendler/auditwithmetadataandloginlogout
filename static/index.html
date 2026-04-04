@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Audit Trail Exporter</title>
+  <link href="https://unpkg.com/antd@5.11.2/dist/reset.css" rel="stylesheet">
+  <link href="static/antd-reset.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="static/styles.css" rel="stylesheet">
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    // Sequential loader — uses local files as fallback for sandboxed environments
+    var scripts = [
+      'static/react.min.js',
+      'static/react-dom.min.js',
+      'static/dayjs.min.js',
+      'static/dayjs-relativeTime.js',
+      'static/antd.min.js',
+      'static/highcharts.js',
+      'static/mock_data.js',
+      'static/app.js'
+    ];
+    function loadNext(i) {
+      if (i >= scripts.length) return;
+      var s = document.createElement('script');
+      s.src = scripts[i];
+      s.onload = function() { loadNext(i + 1); };
+      s.onerror = function() { console.error('Failed to load: ' + scripts[i]); loadNext(i + 1); };
+      document.body.appendChild(s);
+    }
+    loadNext(0);
+  </script>
+</body>
+</html>
