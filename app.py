@@ -483,34 +483,55 @@ def run_export(request_body: dict):
 # PDF generation — 21 CFR Part 11 style flat audit log
 # ---------------------------------------------------------------------------
 
-_PDF_CORE_COLS = ["Date & Time", "User Name", "Event", "Project", "Target"]
+_PDF_FRIENDLY_LABELS = {
+    "Date & Time": "Date & Time",
+    "User Name": "User Name",
+    "Event": "Event",
+    "Project": "Project Name",
+    "Target User": "Target Name",
+    "Target Entity Type": "Target Type",
+    "Before": "Before Value",
+    "After": "After Value",
+    "Field Changed": "Field Changed",
+    "Field Type": "Field Type",
+    "User First Name": "First Name",
+    "User Last Name": "Last Name",
+    "Added": "Added",
+    "Removed": "Removed",
+}
 
 
-def _derive_target(row):
-    """Best-effort target string from Target Entity Type / Target User / affecting cols."""
-    parts = []
-    if row.get("Target Entity Type"):
-        parts.append(str(row["Target Entity Type"]))
-    if row.get("Target User"):
-        parts.append(str(row["Target User"]))
-    if not parts:
-        # Fall back to any affecting_* columns
-        for k, v in row.items():
-            if k.startswith(("environment_", "hardwareTier_", "dataset_", "model_")) and v:
-                parts.append(str(v))
-                break
-    return " / ".join(parts) if parts else ""
-
-
-def generate_audit_pdf(rows, columns, meta=None):
+def generate_audit_pdf(rows, selected_columns, meta=None):
     """Generate a 21 CFR Part 11 style audit trail PDF.
 
-    Returns PDF bytes.  Uses landscape A4, fixed 6-column layout:
-    Date & Time | User | Event | Project | Target | Detail
+    Returns PDF bytes.  Uses landscape A4 with user-selected columns (up to 6).
+    Column widths are distributed proportionally based on content.
     """
     from fpdf import FPDF
 
     meta = meta or {}
+    if not selected_columns:
+        selected_columns = ["Date & Time", "User Name", "Event", "Project"]
+    selected_columns = selected_columns[:6]
+    n_cols = len(selected_columns)
+
+    # Distribute 277mm (landscape A4 minus margins) across columns
+    total_w = 277
+    # Give Date & Time a fixed width, distribute rest evenly
+    col_widths = []
+    for col in selected_columns:
+        if col in ("Date & Time",):
+            col_widths.append(38)
+        elif col in ("Event",):
+            col_widths.append(min(45, total_w // n_cols))
+        else:
+            col_widths.append(0)  # placeholder
+    fixed = sum(col_widths)
+    flex_count = col_widths.count(0)
+    flex_w = (total_w - fixed) // flex_count if flex_count else 0
+    col_widths = [w if w > 0 else flex_w for w in col_widths]
+    # Distribute any remainder to last column
+    col_widths[-1] += total_w - sum(col_widths)
 
     class AuditPDF(FPDF):
         def header(self):
@@ -533,89 +554,56 @@ def generate_audit_pdf(rows, columns, meta=None):
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
-    # Column widths for landscape A4 (297mm usable ~277mm with margins)
-    col_widths = [38, 28, 40, 30, 35, 106]  # total = 277
-    col_headers = ["Date & Time", "User", "Event", "Project", "Target", "Detail"]
+    col_labels = [_PDF_FRIENDLY_LABELS.get(c, c) for c in selected_columns]
 
-    # Table header
-    pdf.set_font("Helvetica", "B", 7)
-    pdf.set_fill_color(250, 250, 250)
-    pdf.set_draw_color(200, 200, 200)
-    for i, hdr in enumerate(col_headers):
-        pdf.cell(col_widths[i], 6, hdr, border=1, fill=True)
-    pdf.ln()
+    def _print_header_row():
+        pdf.set_font("Helvetica", "B", 7)
+        pdf.set_fill_color(250, 250, 250)
+        pdf.set_draw_color(200, 200, 200)
+        for i, hdr in enumerate(col_labels):
+            pdf.cell(col_widths[i], 6, hdr, border=1, fill=True)
+        pdf.ln()
+
+    _print_header_row()
 
     # Table rows
     pdf.set_font("Helvetica", "", 6.5)
-    core_set = set(_PDF_CORE_COLS + ["Target Entity Type", "Target User", "Target Entity Id",
-                                      "User First Name", "User Last Name", "Event Source",
-                                      "Field Changed", "Field Type", "Before", "After",
-                                      "Added", "Removed"])
 
     for row in rows:
-        dt = str(row.get("Date & Time") or "")
-        user = str(row.get("User Name") or "")
-        event = str(row.get("Event") or "")
-        project = str(row.get("Project") or "")
-        target = _derive_target(row)
+        vals = []
+        for col in selected_columns:
+            v = str(row.get(col) or "")
+            # Truncate very long values
+            if len(v) > 200:
+                v = v[:197] + "..."
+            vals.append(v)
 
-        # Build detail from field changes + metadata
-        detail_parts = []
-        if row.get("Field Changed"):
-            fc = str(row["Field Changed"])
-            before = row.get("Before", "")
-            after = row.get("After", "")
-            added = row.get("Added", "")
-            removed = row.get("Removed", "")
-            if before or after:
-                fc += f' "{before}" -> "{after}"'
-            if added:
-                fc += f" +[{added}]"
-            if removed:
-                fc += f" -[{removed}]"
-            detail_parts.append(fc)
-
-        # Append metadata fields
-        for k, v in row.items():
-            if k.startswith("Meta: ") and v is not None and str(v) != "":
-                detail_parts.append(f"{k[6:]}: {str(v)[:120]}")
-
-        # Any remaining non-core fields
-        for k, v in row.items():
-            if k not in core_set and not k.startswith("Meta: ") and v is not None and str(v) != "":
-                detail_parts.append(f"{k}: {str(v)[:120]}")
-
-        detail = "; ".join(detail_parts)
-
-        vals = [dt[:19], user[:30], event[:45], project[:30], target[:40], detail]
-
-        # Calculate row height based on detail length
-        detail_lines = pdf.multi_cell(col_widths[5], 4, detail, dry_run=True, output="LINES")
-        row_h = max(6, len(detail_lines) * 4)
+        # Calculate row height based on the widest multi-cell content
+        max_lines = 1
+        for i, v in enumerate(vals):
+            lines = pdf.multi_cell(col_widths[i], 4, v, dry_run=True, output="LINES")
+            max_lines = max(max_lines, len(lines))
+        row_h = max(6, max_lines * 4)
 
         # Check if we need a new page
         if pdf.get_y() + row_h > pdf.h - 15:
             pdf.add_page()
-            pdf.set_font("Helvetica", "B", 7)
-            pdf.set_fill_color(250, 250, 250)
-            for i, hdr in enumerate(col_headers):
-                pdf.cell(col_widths[i], 6, hdr, border=1, fill=True)
-            pdf.ln()
+            _print_header_row()
             pdf.set_font("Helvetica", "", 6.5)
 
         y_start = pdf.get_y()
         x_start = pdf.get_x()
 
-        # Fixed-height cells for first 5 columns
-        for i in range(5):
+        # Render each cell with multi_cell for proper wrapping
+        for i, v in enumerate(vals):
             pdf.set_xy(x_start + sum(col_widths[:i]), y_start)
-            pdf.cell(col_widths[i], row_h, vals[i], border=1)
+            if i < n_cols - 1:
+                # For non-last columns, use cell with fixed height
+                pdf.cell(col_widths[i], row_h, vals[i][:int(col_widths[i] / 1.8)], border=1)
+            else:
+                # Last column gets multi_cell for wrapping
+                pdf.multi_cell(col_widths[i], 4, v, border=1)
 
-        # Multi-cell for detail column
-        pdf.set_xy(x_start + sum(col_widths[:5]), y_start)
-        pdf.multi_cell(col_widths[5], 4, detail, border=1)
-
-        # Ensure we're at the right Y position
         pdf.set_y(y_start + row_h)
 
     # End-of-report marker
@@ -632,14 +620,14 @@ def generate_audit_pdf(rows, columns, meta=None):
 def export_pdf(request_body: dict):
     """Generate a 21 CFR Part 11 compliant PDF audit trail report."""
     rows = request_body.get("rows", [])
-    columns = request_body.get("columns", [])
+    selected_columns = request_body.get("selectedColumns", [])
     meta = request_body.get("meta", {})
 
     if not rows:
         raise HTTPException(400, "No rows to export.")
 
     try:
-        pdf_bytes = generate_audit_pdf(rows, columns, meta)
+        pdf_bytes = generate_audit_pdf(rows, selected_columns, meta)
     except Exception as e:
         raise HTTPException(500, f"PDF generation failed: {e}")
 

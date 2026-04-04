@@ -27,6 +27,7 @@ var Tooltip = antd.Tooltip;
 var Typography = antd.Typography;
 var Collapse = antd.Collapse;
 var Empty = antd.Empty;
+var Modal = antd.Modal;
 var message = antd.message;
 var RangePicker = DatePicker.RangePicker;
 
@@ -98,11 +99,11 @@ function downloadCsv(csvString, filename) {
   URL.revokeObjectURL(url);
 }
 
-function downloadPdf(rows, columns, meta) {
+function downloadPdf(rows, selectedColumns, meta) {
   return fetch('api/export-pdf', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ rows: rows, columns: columns, meta: meta }),
+    body: JSON.stringify({ rows: rows, selectedColumns: selectedColumns, meta: meta }),
   }).then(function(r) {
     if (!r.ok) return r.json().then(function(e) { throw new Error(e.detail || 'PDF export failed'); });
     return r.blob();
@@ -117,6 +118,113 @@ function downloadPdf(rows, columns, meta) {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   });
+}
+
+// Human-readable PDF columns matching Domino audit trail UI.
+// Order matters — this is the display order in the picker.
+// Each entry: { label: display name, key: actual data column name }
+var PDF_COLUMN_OPTIONS = [
+  { label: 'Date & Time', key: 'Date & Time' },
+  { label: 'User Name', key: 'User Name' },
+  { label: 'Event', key: 'Event' },
+  { label: 'Project Name', key: 'Project' },
+  { label: 'Target Name', key: 'Target User' },
+  { label: 'Target Type', key: 'Target Entity Type' },
+  { label: 'Before Value', key: 'Before' },
+  { label: 'After Value', key: 'After' },
+  { label: 'Field Changed', key: 'Field Changed' },
+  { label: 'Field Type', key: 'Field Type' },
+  { label: 'User First Name', key: 'User First Name' },
+  { label: 'User Last Name', key: 'User Last Name' },
+  { label: 'Added', key: 'Added' },
+  { label: 'Removed', key: 'Removed' },
+];
+var PDF_DEFAULT_LABELS = ['Date & Time', 'User Name', 'Event', 'Project Name', 'Target Name', 'Field Changed'];
+
+// PDF Column Picker Modal component
+function PdfColumnPicker(props) {
+  var visible = props.visible;
+  var onCancel = props.onCancel;
+  var onExport = props.onExport;
+  var dataColumns = props.columns || [];
+  var loading = props.loading;
+
+  // Filter to options that exist in the actual data
+  var availableOptions = PDF_COLUMN_OPTIONS.filter(function(opt) {
+    return dataColumns.indexOf(opt.key) >= 0;
+  });
+
+  var defaultLabels = PDF_DEFAULT_LABELS.filter(function(label) {
+    return availableOptions.some(function(opt) { return opt.label === label; });
+  });
+
+  var _selected = useState(defaultLabels);
+  var selected = _selected[0]; var setSelected = _selected[1];
+
+  // Reset selection when modal opens
+  useEffect(function() {
+    if (visible) {
+      setSelected(defaultLabels.length ? defaultLabels : availableOptions.slice(0, 6).map(function(o) { return o.label; }));
+    }
+  }, [visible]);
+
+  function toggleCol(label) {
+    var idx = selected.indexOf(label);
+    if (idx >= 0) {
+      setSelected(selected.filter(function(c) { return c !== label; }));
+    } else if (selected.length < 6) {
+      setSelected(selected.concat([label]));
+    } else {
+      message.warning('Maximum 6 columns for PDF export');
+    }
+  }
+
+  function handleExport() {
+    // Map selected labels back to data column keys
+    var selectedKeys = selected.map(function(label) {
+      var opt = availableOptions.find(function(o) { return o.label === label; });
+      return opt ? opt.key : label;
+    });
+    onExport(selectedKeys);
+  }
+
+  return h(Modal, {
+    title: 'Select PDF Columns (max 6)',
+    open: visible,
+    onCancel: onCancel,
+    maskClosable: false,
+    width: 520,
+    footer: h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+      h('span', { style: { color: '#8c8c8c', fontSize: 13 } }, selected.length + ' of 6 columns selected'),
+      h('div', null,
+        h(Button, { onClick: onCancel, style: { marginRight: 8 } }, 'Cancel'),
+        h(Button, {
+          type: 'primary',
+          disabled: selected.length === 0,
+          loading: loading,
+          onClick: handleExport,
+        }, 'Export PDF')
+      )
+    ),
+  },
+    h('p', { style: { marginBottom: 12, color: '#65657B' } }, 'Choose which columns to include in the PDF report. Columns will be sized to fit the page.'),
+    h('p', { style: { marginBottom: 12, color: '#65657B', fontSize: 12 } }, 'CSV export includes all columns with full metadata.'),
+    h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8 } },
+      availableOptions.map(function(opt) {
+        var isSelected = selected.indexOf(opt.label) >= 0;
+        var orderNum = isSelected ? selected.indexOf(opt.label) + 1 : null;
+        return h(Tag, {
+          key: opt.label,
+          color: isSelected ? 'purple' : 'default',
+          style: { cursor: 'pointer', padding: '4px 10px', fontSize: 13, marginBottom: 4 },
+          onClick: function(e) { e.stopPropagation(); toggleCol(opt.label); },
+        },
+          isSelected ? h('span', { style: { marginRight: 4, fontWeight: 'bold' } }, orderNum + '.') : null,
+          opt.label
+        );
+      })
+    )
+  );
 }
 
 function rowsToCsv(rows, columns) {
@@ -246,6 +354,9 @@ function ExportTab(props) {
 
   var _pdfLoading = useState(false);
   var pdfLoading = _pdfLoading[0]; var setPdfLoading = _pdfLoading[1];
+
+  var _pdfModalOpen = useState(false);
+  var pdfModalOpen = _pdfModalOpen[0]; var setPdfModalOpen = _pdfModalOpen[1];
 
   var _filteredRows = useState(null);
   var filteredRows = _filteredRows[0]; var setFilteredRows = _filteredRows[1];
@@ -384,25 +495,11 @@ function ExportTab(props) {
                 var suffix = filteredRows !== null && filteredRows.length !== tableData.length ? '_filtered' : '';
                 downloadCsv(csv, 'audit_trail' + suffix + '_' + today + '.csv');
               },
-            }, filteredRows !== null && filteredRows.length !== tableData.length ? 'Download CSV (' + filteredRows.length + ')' : 'Download CSV'),
+            }, filteredRows !== null && filteredRows.length !== tableData.length ? 'CSV \u2014 All Columns (' + filteredRows.length + ' rows)' : 'CSV \u2014 All Columns'),
             h(Button, {
               size: 'small',
-              loading: pdfLoading,
-              onClick: function() {
-                setPdfLoading(true);
-                var exportRows = filteredRows !== null && filteredRows.length !== tableData.length ? filteredRows : result.rows;
-                var dr = dateRange;
-                var meta = {
-                  generated: dayjs().format('YYYY-MM-DD HH:mm:ss') + ' UTC',
-                  records: exportRows.length,
-                  dateRange: dr && dr[0] && dr[1] ? dr[0].format('YYYY-MM-DD') + ' to ' + dr[1].format('YYYY-MM-DD') : 'N/A',
-                  system: dominoHost || 'Domino',
-                };
-                downloadPdf(exportRows, result.columns, meta)
-                  .then(function() { setPdfLoading(false); message.success('PDF downloaded'); })
-                  .catch(function(err) { setPdfLoading(false); message.error(err.message || 'PDF export failed'); });
-              },
-            }, filteredRows !== null && filteredRows.length !== tableData.length ? 'Export PDF (' + filteredRows.length + ')' : 'Export PDF')
+              onClick: function() { setPdfModalOpen(true); },
+            }, filteredRows !== null && filteredRows.length !== tableData.length ? 'PDF Report (' + filteredRows.length + ' rows)' : 'PDF Report')
           )
         ),
         h(Table, {
@@ -416,7 +513,29 @@ function ExportTab(props) {
             setFilteredRows(extra.currentDataSource);
           },
         })
-      )
+      ),
+
+      // PDF column picker modal
+      h(PdfColumnPicker, {
+        visible: pdfModalOpen,
+        columns: result ? result.columns : [],
+        loading: pdfLoading,
+        onCancel: function() { setPdfModalOpen(false); },
+        onExport: function(selectedCols) {
+          setPdfLoading(true);
+          var exportRows = filteredRows !== null && filteredRows.length !== tableData.length ? filteredRows : result.rows;
+          var dr = dateRange;
+          var meta = {
+            generated: dayjs().format('YYYY-MM-DD HH:mm:ss') + ' UTC',
+            records: exportRows.length,
+            dateRange: dr && dr[0] && dr[1] ? dr[0].format('YYYY-MM-DD') + ' to ' + dr[1].format('YYYY-MM-DD') : 'N/A',
+            system: dominoHost || 'Domino',
+          };
+          downloadPdf(exportRows, selectedCols, meta)
+            .then(function() { setPdfLoading(false); setPdfModalOpen(false); message.success('PDF downloaded'); })
+            .catch(function(err) { setPdfLoading(false); message.error(err.message || 'PDF export failed'); });
+        },
+      })
     ) : null
   );
 }
@@ -448,6 +567,9 @@ function LoginAuditTab(props) {
 
   var _pdfLoading2 = useState(false);
   var pdfLoading2 = _pdfLoading2[0]; var setPdfLoading2 = _pdfLoading2[1];
+
+  var _pdfModalOpen2 = useState(false);
+  var pdfModalOpen2 = _pdfModalOpen2[0]; var setPdfModalOpen2 = _pdfModalOpen2[1];
 
   var _columnFilteredRows = useState(null);
   var columnFilteredRows = _columnFilteredRows[0]; var setColumnFilteredRows = _columnFilteredRows[1];
@@ -769,25 +891,12 @@ function LoginAuditTab(props) {
                     var suffix = isFiltered ? '_filtered' : '';
                     downloadCsv(csv, 'login_audit' + suffix + '_' + ts + '.csv');
                   },
-                }, isFiltered ? 'Export CSV (' + exportRows.length + ')' : 'Export CSV'),
+                }, isFiltered ? 'CSV \u2014 All Columns (' + exportRows.length + ' rows)' : 'CSV \u2014 All Columns'),
                 h(Button, {
                   key: 'pdf',
                   size: 'small',
-                  loading: pdfLoading2,
-                  onClick: function() {
-                    setPdfLoading2(true);
-                    var dr = dateRange;
-                    var meta = {
-                      generated: dayjs().format('YYYY-MM-DD HH:mm:ss') + ' UTC',
-                      records: exportRows.length,
-                      dateRange: dr && dr[0] && dr[1] ? dr[0].format('YYYY-MM-DD') + ' to ' + dr[1].format('YYYY-MM-DD') : 'N/A',
-                      system: 'Keycloak Login Audit',
-                    };
-                    downloadPdf(exportRows, result.columns, meta)
-                      .then(function() { setPdfLoading2(false); message.success('PDF downloaded'); })
-                      .catch(function(err) { setPdfLoading2(false); message.error(err.message || 'PDF export failed'); });
-                  },
-                }, isFiltered ? 'Export PDF (' + exportRows.length + ')' : 'Export PDF'),
+                  onClick: function() { setPdfModalOpen2(true); },
+                }, isFiltered ? 'PDF Report (' + exportRows.length + ' rows)' : 'PDF Report'),
               ];
             })()
           )
@@ -803,7 +912,29 @@ function LoginAuditTab(props) {
             setColumnFilteredRows(extra.currentDataSource);
           },
         })
-      )
+      ),
+
+      // PDF column picker modal
+      h(PdfColumnPicker, {
+        visible: pdfModalOpen2,
+        columns: result ? result.columns : [],
+        loading: pdfLoading2,
+        onCancel: function() { setPdfModalOpen2(false); },
+        onExport: function(selectedCols) {
+          setPdfLoading2(true);
+          var exportRows = columnFilteredRows !== null && columnFilteredRows.length !== filteredRows.length ? columnFilteredRows : filteredRows;
+          var dr = dateRange;
+          var meta = {
+            generated: dayjs().format('YYYY-MM-DD HH:mm:ss') + ' UTC',
+            records: exportRows.length,
+            dateRange: dr && dr[0] && dr[1] ? dr[0].format('YYYY-MM-DD') + ' to ' + dr[1].format('YYYY-MM-DD') : 'N/A',
+            system: 'Keycloak Login Audit',
+          };
+          downloadPdf(exportRows, selectedCols, meta)
+            .then(function() { setPdfLoading2(false); setPdfModalOpen2(false); message.success('PDF downloaded'); })
+            .catch(function(err) { setPdfLoading2(false); message.error(err.message || 'PDF export failed'); });
+        },
+      })
     ) : null,
 
     result && result.status === 'empty' ? h(Empty, { description: result.message }) : null
