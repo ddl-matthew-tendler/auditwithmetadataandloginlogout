@@ -1,98 +1,115 @@
-## Domino Audit Trail Export (Full Metadata) – Streamlit App
+## Domino Audit Trail Exporter (Full Metadata + Login Audit)
 
-Currently, Domino's unified audit trail provides additional metadata for Audit Events that is only available by clicking into each event and viewing its attributes. Those attributes are not included in the native CSV Download extract. This app allows the admin user to export Domino Audit Trail events to JSON and CSV with FULL human-friendly metadata and attributes.  This Streamlit app calls the Domino Audit Trail API, flattens event structures (including metadata and affected entities), and writes results to a Domino Dataset for download and analysis.
+A Domino standard app that exports Audit Trail events with full metadata flattening, generates 21 CFR Part 11 compliant PDF reports, and tracks login/logout events via Keycloak integration.
 
-> Note: This is not an official Domino product. It is provided as-is and has not been formally validated. Screenshots below:
+Currently, Domino's unified audit trail provides additional metadata for Audit Events that is only available by clicking into each event and viewing its attributes. Those attributes are not included in the native CSV Download extract. This app calls the Domino Audit Trail API, flattens event structures (including metadata and affected entities), and writes results to a Domino Dataset for download and analysis.
 
-> <img width="558" height="567" alt="image" src="https://github.com/user-attachments/assets/c553fc0e-b99c-4039-93b8-9404bbd2568d" />
+> Note: This is not an official Domino product. It is provided as-is and has not been formally validated.
 
+### Architecture
 
-<img width="543" height="549" alt="image" src="https://github.com/user-attachments/assets/92b91dad-f342-4bd8-b589-8358b429ba47" />
-
+- **Backend**: FastAPI (Python) — handles API calls, data flattening, PDF generation, and DuckDB queries
+- **Frontend**: React 18 + Ant Design 5 via CDN (no build step required)
+- **Charts**: Highcharts for event and actor rollup visualizations
+- **PDF**: fpdf2 for 21 CFR Part 11 compliant audit trail reports
 
 ### Features
-- **Full metadata flattening**: dynamic inclusion of `metadata` fields and affected entities.
-- **Human-readable timestamps**: UTC string alongside raw metadata.
-- **Large exports**: fetches in pages; can chunk CSV output when very large.
-- **Domino Dataset output**: saves JSON and CSV into a project dataset for easy access.
+
+- **Export tab**: Fetch audit trail events, flatten metadata dynamically, and save as JSON, Parquet (partitioned by day), and CSV
+- **Explore tab**: Query previously exported Parquet files with DuckDB for fast rollups and filtering
+- **Login Audit tab**: Fetch login/logout events from Keycloak for 21 CFR Part 11 compliance tracking
+- **PDF export**: Generate regulatory-grade PDF reports with fixed 6-column layout (Date & Time, User, Event, Project, Target, Detail)
+- **Full metadata flattening**: Dynamic inclusion of `metadata` fields, affected entities, targets, and field changes
+- **Dummy data mode**: Built-in mock data for demos and development without a Domino connection
 
 ### Requirements
-- Python 3.8+
-- Packages: `streamlit`, `requests`, `pandas`, `duckdb`, `pyarrow`, `streamlit-js-eval`
-- Domino user API key exposed via environment variable `DOMINO_USER_API_KEY` (or enter it in the UI)
-- Access to a Domino deployment and its Audit Trail API
 
-### Configuration
-- **Domino host**: When run as a Domino App, the host is auto-detected from the browser origin (and sanitized), so no code edits are required. When running locally, enter your Domino URL in the UI.
-- **API key**: Provide `DOMINO_USER_API_KEY` via environment or enter it in the UI.
-- **Dataset selection**: You choose a mounted Domino Dataset from a dropdown in the app. No hardcoded dataset path is required.
-- **Fetch settings**: Pagination size is 1000 per request. The UI lets you choose a date range and `Maximum number of rows` (default 1,000,000).
+- Python 3.8+
+- Packages: `fastapi`, `uvicorn`, `requests`, `pandas`, `duckdb`, `pyarrow`, `fpdf2`, `python-keycloak`
+- Domino user API key exposed via environment variable `DOMINO_USER_API_KEY`
+- Access to a Domino deployment and its Audit Trail API
+- (Optional) Keycloak access for login/logout event auditing
 
 ### Output files
-Written into the selected Domino Dataset:
-- `audit_full_metadata_YYYYMMDD.json`
-- `parquet/date=YYYYMMDD/audit_full_metadata_YYYYMMDD.parquet` (partitioned by day)
-- `audit_full_metadata_friendly_YYYYMMDD.csv`
-- If very large: `audit_full_metadata_friendly_YYYYMMDD_partN.csv`
 
-### CSV columns (high level)
-- Core: `Date & Time`, `User Name`, `User First Name`, `User Last Name`, `Event`, `Project`, `Event Source`
-- Targets: `Target Entity Type`, `Target User`, `Target Entity Id`
-- Field changes (when present): `Field Changed`, `Field Type`, `Before`, `After`, `Added`, `Removed`
-- Dynamic entity expansions: `<entityType>_1`, `<entityType>_2`, ... (from `affecting[]`)
-- Dynamic metadata expansions: `Meta: <key>` for each key in `metadata`
+Written into the selected Domino Dataset:
+- `audit_full_metadata_YYYYMMDD.json` — raw API response
+- `parquet/date=YYYYMMDD/audit_full_metadata_YYYYMMDD.parquet` — partitioned by day
+- `audit_full_metadata_friendly_YYYYMMDD.csv` — flattened tabular data
+- `audit_trail_report_YYYYMMDD.pdf` — 21 CFR Part 11 compliant PDF (via Export PDF button)
+
+### CSV / PDF columns
+
+- **Core**: `Date & Time`, `User Name`, `User First Name`, `User Last Name`, `Event`, `Project`, `Event Source`
+- **Targets**: `Target Entity Type`, `Target User`, `Target Entity Id`
+- **Field changes**: `Field Changed`, `Field Type`, `Before`, `After`, `Added`, `Removed`
+- **Dynamic entity expansions**: `<entityType>_1`, `<entityType>_2`, ... (from `affecting[]`)
+- **Dynamic metadata expansions**: `Meta: <key>` for each key in `metadata`
+- **PDF Detail column**: All metadata and field changes collapsed into a single human-readable cell
 
 ### Running on Domino (recommended)
-1. Ensure a user API key is available as an environment variable `DOMINO_USER_API_KEY` in your workspace or app environment (or be ready to paste it into the UI).
-2. Add this script as an App (Streamlit). The script self-starts Streamlit on `DOMINO_APP_PORT` when launched by Domino.
-3. Open the App. The Domino Host field will be pre-filled from the page origin. Select a destination dataset, date range, and max rows; click "Generate Audit Trail Export".
 
-### Running locally (for testing)
-This app targets Domino environments (dataset mounts, auth). You can still run locally for development:
+1. Ensure `DOMINO_USER_API_KEY` is available as an environment variable.
+2. Install dependencies: `pip install -r requirements.txt`
+3. Add this as a Domino App. The entry point is `app.sh` which runs: `uvicorn app:app --host 0.0.0.0 --port 8888`
+4. Open the App. The Domino Host is auto-detected from environment variables. Select a destination dataset, date range, and max rows; click "Generate Audit Trail Export".
 
-1. Install dependencies and activate a virtual environment:
+For Keycloak login auditing, also set:
+- `KEYCLOAK_HOST` — Keycloak server URL
+- `KEYCLOAK_PASSWORD` — Admin password
+- `KEYCLOAK_REALM` (default: `DominoRealm`)
+- `KEYCLOAK_USERNAME` (default: `keycloak`)
+
+### Running locally (for development)
+
+1. Install dependencies:
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-2. Provide your Domino user API key:
+2. Start the FastAPI backend:
 
 ```bash
-export DOMINO_USER_API_KEY=your_api_key_here
+python3 -m uvicorn app:app --host 0.0.0.0 --port 8889
 ```
 
-3. Prepare output directory: on local runs, set a writable path in the UI’s dataset field or create a matching local path.
-
-4. Run the app:
+3. Start the dev server (serves frontend + proxies API calls to backend):
 
 ```bash
-streamlit run app_audit_trail_export.py
+node dev_server.js
 ```
 
-### Using the app
-- **Configure**: Choose Start Date, End Date, and `Maximum number of rows`.
-- **Run export**: Click "Generate Audit Trail Export". A compact progress message displays while fetching pages from the API.
-- **Results**: A raw JSON export, Parquet partitions, and a flattened CSV are written to the dataset. If the CSV is large, it is split into parts. A download button will appear in the UI.
+4. Open http://localhost:8888. The app defaults to Dummy Data mode when not running on Domino.
 
-### Limits and notes
-- The app fetches in pages of 1000. Very large ranges can take minutes.
-- If you cap `Maximum number of rows`, the app stops once that many events are fetched.
-- Dynamic structures: new Domino metadata keys automatically appear as `Meta: <key>` columns.
-- If no events are in the range, the app will report that nothing was found.
- - Explore tab reads the Parquet files in the selected dataset. Run an export first for the dataset you want to explore.
+### Project structure
+
+```
+app.py                  # FastAPI backend — API routes, data flattening, PDF generation
+app.sh                  # Domino App entry point
+dev_server.js           # Node.js dev proxy (local development only)
+requirements.txt        # Python dependencies
+static/
+  index.html            # SPA entry point with sequential script loader
+  app.js                # React + Ant Design frontend (3 tabs)
+  mock_data.js          # Dummy data generators for demo mode
+  styles.css            # Domino-themed styles
+  domino-logo.svg       # Domino brand logo
+  react.min.js          # React 18 (local CDN copy)
+  react-dom.min.js      # ReactDOM 18 (local CDN copy)
+  antd.min.js           # Ant Design 5 (local CDN copy)
+  antd-reset.css        # Ant Design reset styles
+  dayjs.min.js          # Day.js (local CDN copy)
+  dayjs-relativeTime.js # Day.js relative time plugin
+  highcharts.js         # Highcharts (local CDN copy)
+```
 
 ### Troubleshooting
-- **Dataset not found**: Create a project Dataset named `fullauditextracts` so the path `/domino/datasets/local/fullauditextracts` exists.
+
+- **Dataset not found**: Create a project Dataset so the mounted path exists under `/domino/datasets/local/`.
 - **Missing API key**: Set `DOMINO_USER_API_KEY` in the environment before starting.
 - **401/403 errors**: Ensure the API key is valid and has permission to call the Audit Trail API.
-- **Wrong host**: Update `DOMINO_HOST` to the correct Domino base URL for your deployment.
 - **No events returned**: Confirm the selected date range; try expanding the window.
- - **Explore shows DuckDB missing**: Install requirements.txt into your environment so `duckdb` and `pyarrow` are available.
-
-### Development
-- Primary script: `app_audit_trail_export.py`
-- Key functions: fetching with pagination, event flattening, and Streamlit UI.
-- Adjust constants (`DOMINO_HOST`, `DATASET_DIR`) as needed for your environment.
-
+- **DuckDB missing in Explore tab**: Install `requirements.txt` into your environment so `duckdb` and `pyarrow` are available.
+- **Keycloak not configured**: The Login Audit tab requires `KEYCLOAK_HOST` and `KEYCLOAK_PASSWORD` environment variables. Without them, use Dummy Data mode.
