@@ -454,7 +454,7 @@ def run_export(request_body: dict):
         raise HTTPException(502, f"API error: {http_err}")
 
     if not events:
-        return {"status": "empty", "message": "No audit events found for the given date range.", "eventCount": 0}
+        return {"status": "empty", "message": "No audit events found for the given date range."}
 
     rows = flatten_events(events)
     df = pd.DataFrame(rows)
@@ -472,10 +472,9 @@ def run_export(request_body: dict):
 
     return {
         "status": "ok",
-        "eventCount": len(events),
         "rowCount": len(df),
         "csvData": csv_data,
-        "previewRows": json.loads(df.head(200).to_json(orient="records")),
+        "rows": json.loads(df.to_json(orient="records")),
         "columns": list(df.columns),
     }
 

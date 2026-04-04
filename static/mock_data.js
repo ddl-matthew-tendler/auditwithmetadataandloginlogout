@@ -111,14 +111,8 @@ function generateMockExportResult() {
   ];
   return {
     status: 'ok',
-    eventCount: 487,
     rowCount: rows.length,
-    filesSaved: [
-      '/domino/datasets/local/audit-exports/audit_full_metadata_20260403.json',
-      '/domino/datasets/local/audit-exports/parquet',
-      '/domino/datasets/local/audit-exports/audit_full_metadata_friendly_20260403.csv',
-    ],
-    previewRows: rows.slice(0, 200),
+    rows: rows,
     columns: columns,
     csvData: null,
   };

@@ -247,9 +247,13 @@ function ExportTab(props) {
   var _pdfLoading = useState(false);
   var pdfLoading = _pdfLoading[0]; var setPdfLoading = _pdfLoading[1];
 
+  var _filteredRows = useState(null);
+  var filteredRows = _filteredRows[0]; var setFilteredRows = _filteredRows[1];
+
   function handleExport() {
     if (useDummy) {
       setLoading(true);
+      setFilteredRows(null);
       setTimeout(function() {
         setResult(generateMockExportResult());
         setLoading(false);
@@ -261,6 +265,7 @@ function ExportTab(props) {
     setLoading(true);
     setError(null);
     setResult(null);
+    setFilteredRows(null);
 
     var body = {
       dominoHost: dominoHost,
@@ -276,7 +281,7 @@ function ExportTab(props) {
         if (data.status === 'empty') {
           message.warning(data.message);
         } else {
-          message.success('Export complete: ' + data.eventCount + ' events, ' + data.rowCount + ' rows');
+          message.success('Export complete: ' + data.rowCount + ' records');
         }
       })
       .catch(function(err) {
@@ -286,12 +291,12 @@ function ExportTab(props) {
   }
 
   var columns = useMemo(function() {
-    return buildTableColumns(result ? result.previewRows : [], result ? result.columns : []);
+    return buildTableColumns(result ? result.rows : [], result ? result.columns : []);
   }, [result]);
 
   var tableData = useMemo(function() {
-    if (!result || !result.previewRows) return [];
-    return result.previewRows.map(function(r, i) {
+    if (!result || !result.rows) return [];
+    return result.rows.map(function(r, i) {
       return Object.assign({}, r, { _key: i });
     });
   }, [result]);
@@ -355,8 +360,13 @@ function ExportTab(props) {
     result && result.status === 'ok' ? h('div', null,
       // Stats
       h('div', { className: 'stats-row' },
-        h(StatCard, { label: 'Events Fetched', value: (result.eventCount || 0).toLocaleString(), color: 'primary' }),
-        h(StatCard, { label: 'Rows Generated', value: (result.rowCount || 0).toLocaleString(), color: 'info' })
+        h(StatCard, {
+          label: filteredRows !== null && filteredRows.length !== tableData.length ? 'Showing / Total Records' : 'Total Audit Records',
+          value: filteredRows !== null && filteredRows.length !== tableData.length
+            ? filteredRows.length.toLocaleString() + ' / ' + tableData.length.toLocaleString()
+            : (result.rowCount || 0).toLocaleString(),
+          color: filteredRows !== null && filteredRows.length !== tableData.length ? 'info' : 'primary',
+        })
       ),
 
       // Data table with download buttons
@@ -369,27 +379,30 @@ function ExportTab(props) {
               size: 'small',
               onClick: function() {
                 var today = dayjs().format('YYYYMMDD');
-                var csv = result.csvData || rowsToCsv(result.previewRows, result.columns);
-                downloadCsv(csv, 'audit_full_metadata_friendly_' + today + '.csv');
+                var exportRows = filteredRows !== null && filteredRows.length !== tableData.length ? filteredRows : result.rows;
+                var csv = rowsToCsv(exportRows, result.columns);
+                var suffix = filteredRows !== null && filteredRows.length !== tableData.length ? '_filtered' : '';
+                downloadCsv(csv, 'audit_trail' + suffix + '_' + today + '.csv');
               },
-            }, 'Download CSV'),
+            }, filteredRows !== null && filteredRows.length !== tableData.length ? 'Download CSV (' + filteredRows.length + ')' : 'Download CSV'),
             h(Button, {
               size: 'small',
               loading: pdfLoading,
               onClick: function() {
                 setPdfLoading(true);
+                var exportRows = filteredRows !== null && filteredRows.length !== tableData.length ? filteredRows : result.rows;
                 var dr = dateRange;
                 var meta = {
                   generated: dayjs().format('YYYY-MM-DD HH:mm:ss') + ' UTC',
-                  records: result.rowCount || result.previewRows.length,
+                  records: exportRows.length,
                   dateRange: dr && dr[0] && dr[1] ? dr[0].format('YYYY-MM-DD') + ' to ' + dr[1].format('YYYY-MM-DD') : 'N/A',
                   system: dominoHost || 'Domino',
                 };
-                downloadPdf(result.previewRows, result.columns, meta)
+                downloadPdf(exportRows, result.columns, meta)
                   .then(function() { setPdfLoading(false); message.success('PDF downloaded'); })
                   .catch(function(err) { setPdfLoading(false); message.error(err.message || 'PDF export failed'); });
               },
-            }, 'Export PDF')
+            }, filteredRows !== null && filteredRows.length !== tableData.length ? 'Export PDF (' + filteredRows.length + ')' : 'Export PDF')
           )
         ),
         h(Table, {
@@ -399,6 +412,9 @@ function ExportTab(props) {
           size: 'small',
           scroll: { x: 'max-content', y: 500 },
           pagination: { pageSize: 50, showSizeChanger: true, showTotal: function(t) { return t + ' rows'; } },
+          onChange: function(_pagination, _filters, _sorter, extra) {
+            setFilteredRows(extra.currentDataSource);
+          },
         })
       )
     ) : null
@@ -432,6 +448,9 @@ function LoginAuditTab(props) {
 
   var _pdfLoading2 = useState(false);
   var pdfLoading2 = _pdfLoading2[0]; var setPdfLoading2 = _pdfLoading2[1];
+
+  var _columnFilteredRows = useState(null);
+  var columnFilteredRows = _columnFilteredRows[0]; var setColumnFilteredRows = _columnFilteredRows[1];
 
   var outcomeChartRef = useRef(null);
   var eventChartRef = useRef(null);
@@ -467,7 +486,7 @@ function LoginAuditTab(props) {
       if (data.status === 'empty') {
         message.info(data.message);
       } else {
-        message.success('Loaded ' + data.eventCount + ' login events');
+        message.success('Loaded ' + (data.eventCount || 0).toLocaleString() + ' login events');
       }
     })
     .catch(function(err) {
@@ -634,7 +653,19 @@ function LoginAuditTab(props) {
       type: 'warning',
       showIcon: true,
       message: 'Keycloak Not Configured',
-      description: 'Set KEYCLOAK_PASSWORD in your Domino environment variables. The Keycloak host is auto-detected on most Domino deployments. Using dummy data for now.',
+      description: h('div', null,
+        h('p', { style: { margin: '0 0 8px' } }, 'To enable login/logout audit tracking, you need to set the Keycloak admin password as an environment variable:'),
+        h('ol', { style: { margin: 0, paddingLeft: 20 } },
+          h('li', null, 'Go to ', h('strong', null, 'Account Settings'), ' → ', h('strong', null, 'User Environment Variables'), ' (left sidebar in the Domino UI)'),
+          h('li', null, 'In the ', h('strong', null, 'Set user environment variable'), ' section, enter:', h('ul', { style: { margin: '4px 0', paddingLeft: 20 } },
+            h('li', null, 'Name: ', h('code', null, 'KEYCLOAK_PASSWORD')),
+            h('li', null, 'Value: the Keycloak ', h('code', null, 'admin'), ' user password (ask your Domino platform administrator if you don\'t know it)')
+          )),
+          h('li', null, 'Click ', h('strong', null, 'Set variable')),
+          h('li', null, 'Restart this app — the variable is picked up at startup')
+        ),
+        h('p', { style: { margin: '8px 0 0', color: '#8c8c8c' } }, 'The Keycloak host is auto-detected on Domino deployments. No URL configuration is needed. Using dummy data for preview until configured.')
+      ),
       style: { marginBottom: 16 },
     }) : null,
 
@@ -674,7 +705,11 @@ function LoginAuditTab(props) {
       // Stats row
       h('div', { className: 'stats-row' },
         h(StatCard, {
-          label: 'Total Events', value: (result.eventCount || 0).toLocaleString(), color: 'primary',
+          label: columnFilteredRows !== null && columnFilteredRows.length !== filteredRows.length ? 'Showing / Total Events' : 'Total Events',
+          value: columnFilteredRows !== null && columnFilteredRows.length !== filteredRows.length
+            ? columnFilteredRows.length.toLocaleString() + ' / ' + (result.eventCount || 0).toLocaleString()
+            : (result.eventCount || 0).toLocaleString(),
+          color: columnFilteredRows !== null && columnFilteredRows.length !== filteredRows.length ? 'info' : 'primary',
         }),
         h(StatCard, {
           label: 'Successful Logins',
@@ -721,36 +756,40 @@ function LoginAuditTab(props) {
               onClose: function() { setTableFilter(null); },
               color: 'purple',
             }, filterLabel) : null,
-            h(Button, {
-              size: 'small',
-              onClick: function() {
-                if (result.csvData) {
-                  var ts = dayjs().format('YYYYMMDD_HHmmss');
-                  downloadCsv(result.csvData, 'login_audit_' + ts + '.csv');
-                } else {
-                  var csv = rowsToCsv(filteredRows, result.columns);
-                  var ts2 = dayjs().format('YYYYMMDD_HHmmss');
-                  downloadCsv(csv, 'login_audit_' + ts2 + '.csv');
-                }
-              },
-            }, 'Export CSV'),
-            h(Button, {
-              size: 'small',
-              loading: pdfLoading2,
-              onClick: function() {
-                setPdfLoading2(true);
-                var dr = dateRange;
-                var meta = {
-                  generated: dayjs().format('YYYY-MM-DD HH:mm:ss') + ' UTC',
-                  records: result.rowCount || filteredRows.length,
-                  dateRange: dr && dr[0] && dr[1] ? dr[0].format('YYYY-MM-DD') + ' to ' + dr[1].format('YYYY-MM-DD') : 'N/A',
-                  system: 'Keycloak Login Audit',
-                };
-                downloadPdf(filteredRows, result.columns, meta)
-                  .then(function() { setPdfLoading2(false); message.success('PDF downloaded'); })
-                  .catch(function(err) { setPdfLoading2(false); message.error(err.message || 'PDF export failed'); });
-              },
-            }, 'Export PDF')
+            (function() {
+              var exportRows = columnFilteredRows !== null && columnFilteredRows.length !== filteredRows.length ? columnFilteredRows : filteredRows;
+              var isFiltered = exportRows.length !== filteredRows.length;
+              return [
+                h(Button, {
+                  key: 'csv',
+                  size: 'small',
+                  onClick: function() {
+                    var csv = rowsToCsv(exportRows, result.columns);
+                    var ts = dayjs().format('YYYYMMDD_HHmmss');
+                    var suffix = isFiltered ? '_filtered' : '';
+                    downloadCsv(csv, 'login_audit' + suffix + '_' + ts + '.csv');
+                  },
+                }, isFiltered ? 'Export CSV (' + exportRows.length + ')' : 'Export CSV'),
+                h(Button, {
+                  key: 'pdf',
+                  size: 'small',
+                  loading: pdfLoading2,
+                  onClick: function() {
+                    setPdfLoading2(true);
+                    var dr = dateRange;
+                    var meta = {
+                      generated: dayjs().format('YYYY-MM-DD HH:mm:ss') + ' UTC',
+                      records: exportRows.length,
+                      dateRange: dr && dr[0] && dr[1] ? dr[0].format('YYYY-MM-DD') + ' to ' + dr[1].format('YYYY-MM-DD') : 'N/A',
+                      system: 'Keycloak Login Audit',
+                    };
+                    downloadPdf(exportRows, result.columns, meta)
+                      .then(function() { setPdfLoading2(false); message.success('PDF downloaded'); })
+                      .catch(function(err) { setPdfLoading2(false); message.error(err.message || 'PDF export failed'); });
+                  },
+                }, isFiltered ? 'Export PDF (' + exportRows.length + ')' : 'Export PDF'),
+              ];
+            })()
           )
         ),
         h(Table, {
@@ -760,6 +799,9 @@ function LoginAuditTab(props) {
           size: 'small',
           scroll: { x: 'max-content', y: 500 },
           pagination: { pageSize: 50, showSizeChanger: true, showTotal: function(t) { return t + ' rows'; } },
+          onChange: function(_pagination, _filters, _sorter, extra) {
+            setColumnFilteredRows(extra.currentDataSource);
+          },
         })
       )
     ) : null,
