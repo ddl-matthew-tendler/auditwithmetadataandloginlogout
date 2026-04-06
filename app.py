@@ -216,6 +216,32 @@ KEYCLOAK_EVENT_TYPES = [
 LOGIN_EVENT_TYPES = ["LOGIN", "LOGIN_ERROR", "LOGOUT", "LOGOUT_ERROR"]
 
 
+KEYCLOAK_PROBE_CANDIDATES = [
+    "http://keycloak-http.domino-platform:80",
+    "http://keycloak-http.domino-platform.svc.cluster.local:80",
+    "http://keycloak-http:80",
+]
+
+# Keycloak 17+ (Quarkus) removed the /auth/ prefix; try both
+KEYCLOAK_PATH_VARIANTS = ["/auth/", "/"]
+
+
+def _probe_keycloak_host(candidates=None, timeout=3):
+    """Try to find a reachable Keycloak host. Returns (host, path_prefix) or (None, None)."""
+    candidates = candidates or KEYCLOAK_PROBE_CANDIDATES
+    for candidate in candidates:
+        for path in KEYCLOAK_PATH_VARIANTS:
+            url = candidate.rstrip("/") + path
+            try:
+                r = requests.get(url, timeout=timeout, verify=False)
+                logger.info("Keycloak probe %s -> status %s", url, r.status_code)
+                if r.status_code < 400:
+                    return candidate, path
+            except Exception as e:
+                logger.info("Keycloak probe %s -> failed: %s", url, e)
+    return None, None
+
+
 def _get_keycloak_admin():
     """Create a KeycloakAdmin client using env vars with auto-detection fallback.
     Returns (admin, realm)."""
@@ -230,30 +256,20 @@ def _get_keycloak_admin():
                 host or "(auto-detect)", username, "set" if password else "NOT SET", realm)
 
     # Auto-detect Keycloak host from common Domino internal service URLs
+    detected_path = "/auth/"
     if not host:
-        candidates = [
-            "http://keycloak-http.domino-platform:80",
-            "http://keycloak-http.domino-platform.svc.cluster.local:80",
-            "http://keycloak-http:80",
-        ]
-        for candidate in candidates:
-            try:
-                r = requests.get(candidate + "/auth/", timeout=2)
-                logger.info("Keycloak probe %s -> status %s", candidate, r.status_code)
-                if r.status_code < 500:
-                    host = candidate
-                    break
-            except Exception as e:
-                logger.info("Keycloak probe %s -> failed: %s", candidate, e)
-                continue
+        host, detected_path = _probe_keycloak_host()
+        if host:
+            logger.info("Keycloak auto-detected at %s (path: %s)", host, detected_path)
+        else:
+            logger.warning("Keycloak auto-detection failed — none of the probe URLs responded")
 
     if not host or not password:
         logger.warning("Keycloak not configured: host=%s, password=%s", host or "NONE", "set" if password else "NOT SET")
         return None, realm
 
     server_url = host if host.startswith("http") else f"http://{host}"
-    if not server_url.endswith("/auth/"):
-        server_url = server_url.rstrip("/") + "/auth/"
+    server_url = server_url.rstrip("/") + (detected_path or "/auth/")
 
     logger.info("Connecting to Keycloak at %s as user '%s'", server_url, username)
     try:
@@ -393,20 +409,23 @@ def flatten_keycloak_events(events, user_map=None):
 
 def keycloak_available():
     """Check if Keycloak is reachable (env vars or auto-detected host + password)."""
-    if os.environ.get("KEYCLOAK_PASSWORD"):
-        if os.environ.get("KEYCLOAK_HOST"):
-            return True
-        # Try auto-detect
-        for candidate in [
-            "http://keycloak-http.domino-platform:80",
-            "http://keycloak-http.domino-platform.svc.cluster.local:80",
-        ]:
-            try:
-                r = requests.get(candidate + "/auth/", timeout=2)
-                if r.status_code < 500:
-                    return True
-            except Exception:
-                continue
+    password = os.environ.get("KEYCLOAK_PASSWORD", "")
+    if not password:
+        logger.info("keycloak_available: KEYCLOAK_PASSWORD not set")
+        return False
+
+    host = os.environ.get("KEYCLOAK_HOST", "")
+    if host:
+        logger.info("keycloak_available: explicit host=%s, password=set -> True", host)
+        return True
+
+    # Try auto-detect using the same candidates and path variants as _get_keycloak_admin
+    detected_host, detected_path = _probe_keycloak_host()
+    if detected_host:
+        logger.info("keycloak_available: auto-detected host=%s (path=%s) -> True", detected_host, detected_path)
+        return True
+
+    logger.info("keycloak_available: auto-detection failed, no reachable host")
     return False
 
 
@@ -424,6 +443,84 @@ def get_config():
         "hasApiKey": bool(os.environ.get("DOMINO_USER_API_KEY")),
         "hasKeycloak": keycloak_available(),
     }
+
+
+@app.get("/api/keycloak-status")
+def keycloak_status():
+    """Diagnostic endpoint — tests Keycloak connectivity step by step."""
+    status = {
+        "passwordSet": bool(os.environ.get("KEYCLOAK_PASSWORD")),
+        "hostExplicit": os.environ.get("KEYCLOAK_HOST", "") or None,
+        "hostAutoDetected": None,
+        "pathVariant": None,
+        "reachable": False,
+        "authSuccess": False,
+        "realmAccessible": False,
+        "userCount": None,
+        "eventSample": None,
+        "error": None,
+    }
+
+    if not status["passwordSet"]:
+        status["error"] = (
+            "KEYCLOAK_PASSWORD environment variable is not set. "
+            "Set it in Domino Account Settings → User Environment Variables, "
+            "then restart this app."
+        )
+        return status
+
+    # Step 1: find reachable host
+    host = os.environ.get("KEYCLOAK_HOST", "")
+    path_variant = "/auth/"
+    if host:
+        status["hostExplicit"] = host
+    else:
+        detected, detected_path = _probe_keycloak_host()
+        if detected:
+            host = detected
+            path_variant = detected_path
+            status["hostAutoDetected"] = detected
+            status["pathVariant"] = detected_path
+        else:
+            status["error"] = (
+                "Keycloak host auto-detection failed. None of the internal service URLs responded: "
+                + ", ".join(KEYCLOAK_PROBE_CANDIDATES)
+                + ". If Keycloak uses a custom service name, set KEYCLOAK_HOST explicitly."
+            )
+            return status
+
+    status["reachable"] = True
+
+    # Step 2: test auth
+    try:
+        admin, realm = _get_keycloak_admin()
+        if admin is None:
+            status["error"] = "Admin connection returned None — check host and password."
+            return status
+        status["authSuccess"] = True
+    except Exception as e:
+        status["error"] = f"Authentication failed: {e}"
+        return status
+
+    # Step 3: test realm access
+    try:
+        admin.connection.realm_name = realm
+        users = admin.get_users({"max": 5})
+        status["realmAccessible"] = True
+        status["userCount"] = len(users)
+    except Exception as e:
+        status["error"] = f"Realm '{realm}' access failed: {e}"
+        return status
+
+    # Step 4: test event query
+    try:
+        events = admin.get_events({"max": 1, "type": ["LOGIN"]})
+        status["eventSample"] = len(events)
+    except Exception as e:
+        status["error"] = f"Event query failed (auth works, but events API error): {e}"
+        return status
+
+    return status
 
 
 @app.post("/api/export")

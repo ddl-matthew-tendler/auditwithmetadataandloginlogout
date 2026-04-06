@@ -574,13 +574,41 @@ function LoginAuditTab(props) {
   var _columnFilteredRows = useState(null);
   var columnFilteredRows = _columnFilteredRows[0]; var setColumnFilteredRows = _columnFilteredRows[1];
 
+  // Keycloak connection diagnostics
+  var _kcStatus = useState(null);
+  var kcStatus = _kcStatus[0]; var setKcStatus = _kcStatus[1];
+
+  var _kcTesting = useState(false);
+  var kcTesting = _kcTesting[0]; var setKcTesting = _kcTesting[1];
+
   var outcomeChartRef = useRef(null);
   var eventChartRef = useRef(null);
   var hourlyChartRef = useRef(null);
   var actorChartRef = useRef(null);
 
+  var hasKeycloak = config.hasKeycloak;
+
+  function testKeycloakConnection() {
+    setKcTesting(true);
+    setKcStatus(null);
+    apiGet('api/keycloak-status')
+      .then(function(data) {
+        setKcStatus(data);
+        setKcTesting(false);
+        if (data.error) {
+          message.error('Keycloak: ' + data.error);
+        } else {
+          message.success('Keycloak connection verified — all checks passed');
+        }
+      })
+      .catch(function(err) {
+        setKcStatus({ error: err.message });
+        setKcTesting(false);
+      });
+  }
+
   function handleFetch() {
-    if (useDummy || !hasKeycloak) {
+    if (useDummy) {
       setLoading(true);
       setTimeout(function() {
         var data = generateMockLoginResult();
@@ -767,7 +795,26 @@ function LoginAuditTab(props) {
   }, [result]);
 
   var filterLabel = tableFilter ? tableFilter.value : null;
-  var hasKeycloak = config.hasKeycloak;
+
+  // Build the Keycloak status diagnostic display
+  function renderKcDiagnostics() {
+    if (!kcStatus) return null;
+    var steps = [
+      { label: 'KEYCLOAK_PASSWORD set', ok: kcStatus.passwordSet },
+      { label: 'Host: ' + (kcStatus.hostExplicit || kcStatus.hostAutoDetected || 'not found'), ok: kcStatus.reachable },
+      { label: 'Authentication', ok: kcStatus.authSuccess },
+      { label: 'Realm accessible' + (kcStatus.userCount != null ? ' (' + kcStatus.userCount + ' users sampled)' : ''), ok: kcStatus.realmAccessible },
+      { label: 'Event query' + (kcStatus.eventSample != null ? ' (' + kcStatus.eventSample + ' sample events)' : ''), ok: kcStatus.eventSample != null },
+    ];
+    return h('div', { style: { marginTop: 12 } },
+      steps.map(function(step, i) {
+        var icon = step.ok ? '\u2705' : (kcStatus.error && !step.ok ? '\u274C' : '\u2B1C');
+        return h('div', { key: i, style: { fontSize: 13, marginBottom: 2 } }, icon + ' ' + step.label);
+      }),
+      kcStatus.error ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#fff2f0', border: '1px solid #ffccc7', borderRadius: 4, fontSize: 13, color: '#C20A29' } }, kcStatus.error) : null,
+      !kcStatus.error ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 4, fontSize: 13, color: '#28A464' } }, 'All checks passed — Keycloak is ready.') : null
+    );
+  }
 
   return h('div', { className: 'tab-content' },
     // Keycloak not configured warning
@@ -784,12 +831,34 @@ function LoginAuditTab(props) {
             h('li', null, 'Value: the Keycloak ', h('code', null, 'admin'), ' user password (ask your Domino platform administrator if you don\'t know it)')
           )),
           h('li', null, 'Click ', h('strong', null, 'Set variable')),
-          h('li', null, 'Restart this app — the variable is picked up at startup')
+          h('li', null, h('strong', null, 'Restart this app'), ' — environment variables are only loaded at startup')
         ),
-        h('p', { style: { margin: '8px 0 0', color: '#8c8c8c' } }, 'The Keycloak host is auto-detected on Domino deployments. No URL configuration is needed. Using dummy data for preview until configured.')
+        h('p', { style: { margin: '8px 0 0', color: '#8c8c8c' } }, 'The Keycloak host is auto-detected on Domino deployments. No URL configuration is needed.'),
+        h('div', { style: { marginTop: 12 } },
+          h(Button, {
+            size: 'small',
+            loading: kcTesting,
+            onClick: testKeycloakConnection,
+          }, 'Test Keycloak Connection'),
+          renderKcDiagnostics()
+        )
       ),
       style: { marginBottom: 16 },
     }) : null,
+
+    // Show test connection option even when hasKeycloak is true (for diagnostics)
+    hasKeycloak && !useDummy ? h('div', { style: { marginBottom: 12 } },
+      h(Button, {
+        size: 'small',
+        type: 'default',
+        loading: kcTesting,
+        onClick: testKeycloakConnection,
+        style: { marginRight: 8 },
+      }, 'Test Keycloak Connection'),
+      kcStatus && !kcStatus.error ? h(Tag, { color: 'green' }, 'Connected') : null,
+      kcStatus && kcStatus.error ? h(Tag, { color: 'red' }, 'Error') : null,
+      renderKcDiagnostics()
+    ) : null,
 
     // Controls
     h('div', { className: 'panel' },
@@ -815,7 +884,12 @@ function LoginAuditTab(props) {
           )
         ),
         h('div', { className: 'config-field config-field-action' },
-          h(Button, { type: 'primary', onClick: handleFetch, loading: loading }, 'Fetch Login Events')
+          h(Button, {
+            type: 'primary',
+            onClick: handleFetch,
+            loading: loading,
+            disabled: !useDummy && !hasKeycloak,
+          }, !useDummy && !hasKeycloak ? 'Keycloak Not Configured' : 'Fetch Login Events')
         )
       )
     ),
