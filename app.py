@@ -389,20 +389,24 @@ def fetch_keycloak_login_events(
             break
 
     # Deduplicate events – Domino's OIDC flow fires two Keycloak LOGIN
-    # events per actual user login (offline-token + OIDC callback), with
-    # different redirect_uri but same user / session / second.  We round
-    # the millisecond timestamp to the nearest second so both collapse.
+    # events per actual user login (offline-token + OIDC callback).  They
+    # share the same userId / type / sessionId but differ by ~1 s and by
+    # redirect_uri.  A user can only LOGIN once per session, so we dedup
+    # on (userId, type, sessionId).  For events without a sessionId
+    # (e.g. LOGIN_ERROR) we include a coarse timestamp to keep distinct
+    # failed attempts separate.
     seen = set()
     deduped = []
     for evt in all_events[:max_events]:
-        raw_ts = evt.get("time")
-        ts_sec = raw_ts // 1000 if isinstance(raw_ts, (int, float)) else raw_ts
-        key = (
-            ts_sec,
-            evt.get("userId", ""),
-            evt.get("type", ""),
-            evt.get("sessionId", ""),
-        )
+        session_id = evt.get("sessionId", "")
+        if session_id:
+            key = (evt.get("userId", ""), evt.get("type", ""), session_id)
+        else:
+            # No session — use 10-second bucket + user to avoid collapsing
+            # genuinely different failed login attempts
+            raw_ts = evt.get("time")
+            ts_bucket = (raw_ts // 10_000) if isinstance(raw_ts, (int, float)) else raw_ts
+            key = (ts_bucket, evt.get("userId", ""), evt.get("type", ""))
         if key not in seen:
             seen.add(key)
             deduped.append(evt)
