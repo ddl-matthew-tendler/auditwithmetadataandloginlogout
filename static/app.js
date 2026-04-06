@@ -28,6 +28,10 @@ var Typography = antd.Typography;
 var Collapse = antd.Collapse;
 var Empty = antd.Empty;
 var Modal = antd.Modal;
+var Steps = antd.Steps;
+var Result = antd.Result;
+var Divider = antd.Divider;
+var Badge = antd.Badge;
 var message = antd.message;
 var RangePicker = DatePicker.RangePicker;
 
@@ -525,38 +529,104 @@ function ExportTab(props) {
 }
 
 // ---------------------------------------------------------------------------
-// Keycloak Event Setup Panel — auto-detects config and offers one-click enable
+// Setup Wizard — interactive multi-step onboarding for Keycloak configuration
 // ---------------------------------------------------------------------------
-function KeycloakEventSetup() {
-  var _cfg = useState(null);
-  var evtConfig = _cfg[0]; var setEvtConfig = _cfg[1];
+function SetupWizard(props) {
+  var onComplete = props.onComplete;
 
-  var _loading = useState(false);
-  var cfgLoading = _loading[0]; var setCfgLoading = _loading[1];
+  var _step = useState(0);
+  var currentStep = _step[0]; var setCurrentStep = _step[1];
+
+  // Step states
+  var _passwordOk = useState(null); // null=unchecked, true, false
+  var passwordOk = _passwordOk[0]; var setPasswordOk = _passwordOk[1];
+
+  var _connStatus = useState(null);
+  var connStatus = _connStatus[0]; var setConnStatus = _connStatus[1];
+
+  var _connTesting = useState(false);
+  var connTesting = _connTesting[0]; var setConnTesting = _connTesting[1];
+
+  var _evtConfig = useState(null);
+  var evtConfig = _evtConfig[0]; var setEvtConfig = _evtConfig[1];
+
+  var _evtLoading = useState(false);
+  var evtLoading = _evtLoading[0]; var setEvtLoading = _evtLoading[1];
 
   var _enabling = useState(false);
   var enabling = _enabling[0]; var setEnabling = _enabling[1];
 
-  var _cfgError = useState(null);
-  var cfgError = _cfgError[0]; var setCfgError = _cfgError[1];
+  var _setupComplete = useState(false);
+  var setupComplete = _setupComplete[0]; var setSetupComplete = _setupComplete[1];
 
-  // Auto-check config on mount
-  useEffect(function() {
-    setCfgLoading(true);
+  // Auto-run checks on mount
+  useEffect(function() { runPasswordCheck(); }, []);
+
+  // ---- Step 1: Password check ----
+  function runPasswordCheck() {
+    setPasswordOk(null);
+    apiGet('api/keycloak-status')
+      .then(function(data) {
+        var pwOk = data.passwordSet;
+        setPasswordOk(pwOk);
+        if (pwOk) {
+          setCurrentStep(1);
+          runConnectionTest();
+        }
+      })
+      .catch(function() { setPasswordOk(false); });
+  }
+
+  // ---- Step 2: Connection test ----
+  function runConnectionTest() {
+    setConnTesting(true);
+    setConnStatus(null);
+    apiGet('api/keycloak-status')
+      .then(function(data) {
+        setConnStatus(data);
+        setConnTesting(false);
+        if (!data.error && data.reachable && data.authSuccess && data.realmAccessible) {
+          setCurrentStep(2);
+          runEventsCheck();
+        }
+      })
+      .catch(function(err) {
+        setConnStatus({ error: err.message });
+        setConnTesting(false);
+      });
+  }
+
+  // ---- Step 3: Events config check ----
+  function runEventsCheck() {
+    setEvtLoading(true);
     apiGet('api/keycloak-events-config')
-      .then(function(data) { setEvtConfig(data); setCfgLoading(false); })
-      .catch(function(err) { setCfgError(err.message); setCfgLoading(false); });
-  }, []);
+      .then(function(data) {
+        setEvtConfig(data);
+        setEvtLoading(false);
+        if (data.eventsEnabled) {
+          setCurrentStep(3);
+          setSetupComplete(true);
+        }
+      })
+      .catch(function(err) {
+        setEvtConfig({ error: err.message });
+        setEvtLoading(false);
+      });
+  }
 
-  function handleEnable() {
+  function handleEnableEvents() {
     setEnabling(true);
     apiPost('api/keycloak-events-config/enable', {})
       .then(function(data) {
         setEnabling(false);
         message.success(data.message);
-        // Refresh config
-        apiGet('api/keycloak-events-config')
-          .then(function(d) { setEvtConfig(d); });
+        setEvtConfig(Object.assign({}, evtConfig, {
+          eventsEnabled: true,
+          enabledEventTypes: data.config.enabledEventTypes,
+          eventsExpiration: data.config.eventsExpiration,
+        }));
+        setCurrentStep(3);
+        setSetupComplete(true);
       })
       .catch(function(err) {
         setEnabling(false);
@@ -564,103 +634,263 @@ function KeycloakEventSetup() {
       });
   }
 
-  var isEnabled = evtConfig && evtConfig.eventsEnabled;
-  var types = evtConfig ? (evtConfig.enabledEventTypes || []) : [];
+  // Step status helper
+  function stepStatus(idx) {
+    if (idx < currentStep) return 'finish';
+    if (idx === currentStep) {
+      if (idx === 0 && passwordOk === false) return 'error';
+      if (idx === 1 && connStatus && connStatus.error) return 'error';
+      if (idx === 3) return 'finish';
+      return 'process';
+    }
+    return 'wait';
+  }
+
+  var isEventsEnabled = evtConfig && evtConfig.eventsEnabled;
+  var evtTypes = evtConfig ? (evtConfig.enabledEventTypes || []) : [];
   var expDays = evtConfig ? Math.round((evtConfig.eventsExpiration || 0) / 86400) : 0;
 
-  return h('div', null,
-    h(Empty, { description: 'No login events found for the selected date range.' }),
-    h(Alert, {
-      type: isEnabled ? 'success' : 'info',
-      showIcon: true,
-      message: isEnabled ? 'Event Storage is Enabled' : 'Enable Keycloak Event Storage',
-      description: h('div', null,
-        cfgLoading ? h(Spin, { size: 'small' }) : null,
-
-        // Current status display
-        evtConfig && !cfgLoading ? h('div', { style: { marginBottom: 12 } },
-          h('div', { style: { display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 8 } },
-            h('div', { style: { fontSize: 13 } },
-              (isEnabled ? '\u2705' : '\u274C') + ' Save events: ',
-              h('strong', null, isEnabled ? 'ON' : 'OFF')
+  // ----- Render step content -----
+  function renderStepContent() {
+    // Step 0: Password
+    if (currentStep === 0) {
+      if (passwordOk === null) {
+        return h('div', { className: 'wizard-step-content' },
+          h('div', { style: { textAlign: 'center', padding: '32px 0' } },
+            h(Spin, { size: 'large' }),
+            h('p', { style: { marginTop: 16, color: '#65657B' } }, 'Checking environment configuration...')
+          )
+        );
+      }
+      if (passwordOk) {
+        return h('div', { className: 'wizard-step-content' },
+          h(Result, { status: 'success', title: 'Password configured', subTitle: 'KEYCLOAK_PASSWORD environment variable is set.' }),
+          h('div', { style: { textAlign: 'center' } },
+            h(Button, { type: 'primary', onClick: function() { setCurrentStep(1); runConnectionTest(); } }, 'Continue')
+          )
+        );
+      }
+      return h('div', { className: 'wizard-step-content' },
+        h(Alert, { type: 'error', showIcon: true, message: 'Keycloak Password Not Set', style: { marginBottom: 20 } }),
+        h('div', { className: 'wizard-instructions' },
+          h('p', { style: { fontSize: 15, fontWeight: 600, marginBottom: 16, color: '#2E2E38' } }, 'How to set your Keycloak admin password:'),
+          h('div', { className: 'wizard-step-list' },
+            h('div', { className: 'wizard-instruction-step' },
+              h('div', { className: 'wizard-instruction-number' }, '1'),
+              h('div', null,
+                h('strong', null, 'Open Account Settings'),
+                h('p', { className: 'wizard-instruction-detail' }, 'In the Domino UI, click your avatar (top-right) and select ', h('strong', null, 'Account Settings'))
+              )
             ),
-            h('div', { style: { fontSize: 13 } },
-              (types.length > 0 ? '\u2705' : '\u26A0\uFE0F') + ' Event types: ',
-              h('strong', null, types.length > 0 ? types.length + ' configured' : 'none')
+            h('div', { className: 'wizard-instruction-step' },
+              h('div', { className: 'wizard-instruction-number' }, '2'),
+              h('div', null,
+                h('strong', null, 'Navigate to Environment Variables'),
+                h('p', { className: 'wizard-instruction-detail' }, 'Click ', h('strong', null, 'User Environment Variables'), ' in the left sidebar')
+              )
             ),
-            h('div', { style: { fontSize: 13 } },
-              (expDays > 0 ? '\u2705' : '\u26A0\uFE0F') + ' Retention: ',
-              h('strong', null, expDays > 0 ? expDays + ' days' : 'no expiration set')
+            h('div', { className: 'wizard-instruction-step' },
+              h('div', { className: 'wizard-instruction-number' }, '3'),
+              h('div', null,
+                h('strong', null, 'Add the variable'),
+                h('div', { className: 'wizard-code-block' },
+                  h('div', null, 'Name: ', h('code', null, 'KEYCLOAK_PASSWORD')),
+                  h('div', { style: { marginTop: 4 } }, 'Value: ', h('em', { style: { color: '#8c8c8c' } }, 'your Keycloak admin password'))
+                ),
+                h('p', { className: 'wizard-instruction-detail' }, 'Ask your Domino platform administrator if you don\'t have this password')
+              )
+            ),
+            h('div', { className: 'wizard-instruction-step' },
+              h('div', { className: 'wizard-instruction-number' }, '4'),
+              h('div', null,
+                h('strong', null, 'Restart this app'),
+                h('p', { className: 'wizard-instruction-detail' }, 'Environment variables are loaded at startup. Go to the app\'s settings page and click Restart.')
+              )
             )
-          ),
-          types.length > 0 ? h('div', { style: { marginBottom: 8 } },
-            types.map(function(t) {
-              return h(Tag, { key: t, style: { marginBottom: 4, fontSize: 11 } }, t);
-            })
-          ) : null
-        ) : null,
+          )
+        ),
+        h('div', { style: { marginTop: 20, textAlign: 'center' } },
+          h(Button, { type: 'primary', onClick: runPasswordCheck }, 'Re-check Password')
+        )
+      );
+    }
 
-        // One-click enable button
-        !isEnabled && !cfgLoading ? h('div', { style: { marginBottom: 12 } },
-          h(Button, {
-            type: 'primary',
-            loading: enabling,
-            onClick: handleEnable,
-            style: { marginRight: 12 },
-          }, 'Enable Event Storage Now'),
-          h('span', { style: { fontSize: 12, color: '#8c8c8c' } },
-            'Enables login/logout event persistence with 90-day retention via Keycloak Admin API'
+    // Step 1: Connection
+    if (currentStep === 1) {
+      if (connTesting) {
+        return h('div', { className: 'wizard-step-content' },
+          h('div', { style: { textAlign: 'center', padding: '32px 0' } },
+            h(Spin, { size: 'large' }),
+            h('p', { style: { marginTop: 16, color: '#65657B', fontSize: 15 } }, 'Testing Keycloak connection...'),
+            h('p', { style: { color: '#8F8FA3', fontSize: 13 } }, 'Auto-detecting host, authenticating, and verifying realm access')
+          )
+        );
+      }
+      if (connStatus && !connStatus.error) {
+        return h('div', { className: 'wizard-step-content' },
+          h(Result, { status: 'success', title: 'Connected to Keycloak',
+            subTitle: h('div', null,
+              h('div', null, 'Host: ', h('strong', null, connStatus.hostExplicit || connStatus.hostAutoDetected)),
+              connStatus.userCount != null ? h('div', null, 'Users sampled: ', h('strong', null, connStatus.userCount)) : null,
+              connStatus.eventSample != null ? h('div', null, 'Sample events: ', h('strong', null, connStatus.eventSample)) : null
+            )
+          }),
+          h('div', { style: { textAlign: 'center' } },
+            h(Button, { type: 'primary', onClick: function() { setCurrentStep(2); runEventsCheck(); } }, 'Continue')
+          )
+        );
+      }
+      if (connStatus && connStatus.error) {
+        var checkSteps = [
+          { label: 'Password set', ok: connStatus.passwordSet },
+          { label: 'Host detected: ' + (connStatus.hostExplicit || connStatus.hostAutoDetected || 'none'), ok: connStatus.reachable },
+          { label: 'Authentication', ok: connStatus.authSuccess },
+          { label: 'Realm accessible', ok: connStatus.realmAccessible },
+        ];
+        return h('div', { className: 'wizard-step-content' },
+          h(Alert, { type: 'error', showIcon: true, message: 'Connection Failed', description: connStatus.error, style: { marginBottom: 16 } }),
+          h('div', { className: 'wizard-check-list' },
+            checkSteps.map(function(s, i) {
+              return h('div', { key: i, className: 'wizard-check-item' },
+                h('span', { className: 'wizard-check-icon' }, s.ok ? '\u2705' : '\u274C'),
+                h('span', null, s.label)
+              );
+            })
+          ),
+          connStatus.tokenTests ? h(Collapse, {
+            items: [{
+              key: '1',
+              label: 'Debug: raw token endpoint tests',
+              children: h('div', null,
+                connStatus.tokenTests.map(function(t, i) {
+                  return h('div', { key: i, style: { fontSize: 12, marginBottom: 6, padding: '6px 8px', background: t.status === 200 ? '#f6ffed' : '#fafafa', borderRadius: 4, fontFamily: 'monospace', wordBreak: 'break-all' } },
+                    h('strong', null, 'client_id=' + t.client_id + ' \u2192 ' + t.status),
+                    h('div', { style: { color: '#8c8c8c', marginTop: 2 } }, t.response)
+                  );
+                })
+              ),
+            }],
+            style: { marginTop: 12, background: 'transparent' },
+            bordered: false,
+            size: 'small',
+          }) : null,
+          h('div', { style: { marginTop: 16, textAlign: 'center' } },
+            h(Button, { type: 'primary', onClick: runConnectionTest }, 'Retry Connection Test')
+          )
+        );
+      }
+      return null;
+    }
+
+    // Step 2: Event Storage
+    if (currentStep === 2) {
+      if (evtLoading) {
+        return h('div', { className: 'wizard-step-content' },
+          h('div', { style: { textAlign: 'center', padding: '32px 0' } },
+            h(Spin, { size: 'large' }),
+            h('p', { style: { marginTop: 16, color: '#65657B' } }, 'Checking event storage configuration...')
+          )
+        );
+      }
+      if (isEventsEnabled) {
+        return h('div', { className: 'wizard-step-content' },
+          h(Result, { status: 'success', title: 'Event Storage is Active',
+            subTitle: h('div', null,
+              h('div', null, evtTypes.length + ' event types configured'),
+              expDays > 0 ? h('div', null, expDays + '-day retention') : h('div', { style: { color: '#ad8b00' } }, 'No retention limit set')
+            )
+          }),
+          h('div', { style: { textAlign: 'center' } },
+            h(Button, { type: 'primary', onClick: function() { setCurrentStep(3); setSetupComplete(true); } }, 'Continue')
+          )
+        );
+      }
+      // Not enabled
+      return h('div', { className: 'wizard-step-content' },
+        h('div', { style: { textAlign: 'center', marginBottom: 24 } },
+          h('div', { style: { fontSize: 48, marginBottom: 8 } }, '\uD83D\uDCE6'),
+          h('h3', { style: { margin: '0 0 4px', fontSize: 18 } }, 'Event Storage is Disabled'),
+          h('p', { style: { color: '#65657B', margin: 0 } }, 'Keycloak is not saving login/logout events. Enable it now with one click.')
+        ),
+        evtConfig && !evtConfig.error ? h('div', { className: 'wizard-check-list', style: { marginBottom: 20 } },
+          h('div', { className: 'wizard-check-item' },
+            h('span', { className: 'wizard-check-icon' }, '\u274C'),
+            h('span', null, 'Save events: ', h('strong', null, 'OFF'))
+          ),
+          h('div', { className: 'wizard-check-item' },
+            h('span', { className: 'wizard-check-icon' }, evtTypes.length > 0 ? '\u2705' : '\u26A0\uFE0F'),
+            h('span', null, 'Event types: ', h('strong', null, evtTypes.length > 0 ? evtTypes.length + ' configured' : 'none'))
+          ),
+          h('div', { className: 'wizard-check-item' },
+            h('span', { className: 'wizard-check-icon' }, expDays > 0 ? '\u2705' : '\u26A0\uFE0F'),
+            h('span', null, 'Retention: ', h('strong', null, expDays > 0 ? expDays + ' days' : 'not set'))
           )
         ) : null,
-
-        // If enabled but 0 events, explain it's working now
-        isEnabled ? h('p', { style: { margin: '0 0 8px', color: '#28A464' } },
-          'Event storage is active. New login/logout events will be captured going forward. Try fetching again after some login activity has occurred.'
-        ) : null,
-
-        // Manual instructions as fallback
-        !isEnabled ? h(Collapse, {
-          items: [{
-            key: '1',
-            label: 'Manual setup instructions (if auto-enable fails)',
-            children: h('div', null,
-              h('p', { style: { margin: '0 0 8px' } }, 'In the Keycloak Admin Console:'),
-              h('ol', { style: { margin: 0, paddingLeft: 20 } },
-                h('li', null, 'Switch to the ', h('strong', null, 'DominoRealm'), ' (top-left dropdown)'),
-                h('li', null, 'Navigate to: ', h('strong', null, 'Realm settings'), ' → ', h('strong', null, 'Events'), ' tab'),
-                h('li', null, 'Click the ', h('strong', null, 'User events settings'), ' subtab'),
-                h('li', null, 'Toggle ', h('strong', null, 'Save events'), ' to ', h('strong', null, 'ON')),
-                h('li', null, 'Below the toggle, verify that these event types are listed:', h('div', { style: { margin: '4px 0 4px 8px' } },
-                  ['Login', 'Login error', 'Logout', 'Logout error', 'Code to token', 'Code to token error'].map(function(t) {
-                    return h(Tag, { key: t, style: { marginBottom: 2, fontSize: 11 } }, t);
-                  }),
-                  h('div', { style: { fontSize: 12, color: '#8c8c8c', marginTop: 4 } }, 'If any are missing, use the "Add saved types" button to add them')
-                )),
-                h('li', null, 'Click ', h('strong', null, 'Save')),
-                h('li', null, h('em', null, '(Optional)'), ' On the ', h('strong', null, 'Admin events settings'), ' subtab, verify ', h('strong', null, 'Save events'), ' is also ON for admin action auditing')
-              ),
-              h('p', { style: { margin: '8px 0 0', color: '#8c8c8c', fontSize: 12 } }, 'Note: Only new events are captured after enabling. Past events are not retroactively stored.')
+        h('div', { style: { textAlign: 'center', marginBottom: 20 } },
+          h(Button, {
+            type: 'primary',
+            size: 'large',
+            loading: enabling,
+            onClick: handleEnableEvents,
+          }, 'Enable Event Storage Now'),
+          h('p', { style: { marginTop: 8, fontSize: 12, color: '#8c8c8c' } },
+            'Sets: Save events ON \u2022 Adds login/logout event types \u2022 90-day retention'
+          )
+        ),
+        h(Divider, { style: { margin: '16px 0' } }, 'or configure manually'),
+        h('div', { style: { maxWidth: 560, margin: '0 auto' } },
+          h('ol', { style: { margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 2.2, color: '#2E2E38' } },
+            h('li', null, 'Open the Keycloak Admin Console',
+              evtConfig && evtConfig.consoleUrl ? h('span', null, ' \u2014 ', h('a', { href: evtConfig.consoleUrl, target: '_blank', rel: 'noopener noreferrer' }, 'open \u2197')) : null
             ),
-          }],
-          style: { marginTop: 8, background: 'transparent' },
-          bordered: false,
-          size: 'small',
-        }) : null,
+            h('li', null, 'Switch realm to ', h('strong', null, 'DominoRealm'), ' (top-left dropdown)'),
+            h('li', null, h('strong', null, 'Realm settings'), ' \u2192 ', h('strong', null, 'Events'), ' tab \u2192 ', h('strong', null, 'User events settings'), ' subtab'),
+            h('li', null, 'Toggle ', h('strong', null, 'Save events'), ' to ', h('strong', null, 'ON')),
+            h('li', null, 'Verify event types include: LOGIN, LOGIN_ERROR, LOGOUT, LOGOUT_ERROR'),
+            h('li', null, 'Click ', h('strong', null, 'Save'))
+          ),
+          h('p', { style: { marginTop: 8, fontSize: 12, color: '#8c8c8c' } }, 'Only new events are captured after enabling.')
+        ),
+        h('div', { style: { marginTop: 20, textAlign: 'center' } },
+          h(Button, { onClick: runEventsCheck }, 'Re-check Configuration')
+        )
+      );
+    }
 
-        // Direct link to Keycloak console
-        evtConfig && evtConfig.consoleUrl ? h('div', { style: { marginTop: 8 } },
-          h('a', {
-            href: evtConfig.consoleUrl,
-            target: '_blank',
-            rel: 'noopener noreferrer',
-            style: { fontSize: 13 },
-          }, 'Open Keycloak Admin Console → Events settings \u2197')
-        ) : null,
+    // Step 3: All done
+    if (currentStep === 3) {
+      return h('div', { className: 'wizard-step-content' },
+        h(Result, {
+          status: 'success',
+          title: 'Setup Complete',
+          subTitle: 'Keycloak is configured and event storage is active. You\'re ready to fetch authentication events.',
+          extra: h(Button, { type: 'primary', size: 'large', onClick: onComplete }, 'Start Fetching Events'),
+        })
+      );
+    }
+  }
 
-        cfgError ? h('div', { style: { marginTop: 8, color: '#C20A29', fontSize: 13 } }, 'Could not check config: ' + cfgError) : null
-      ),
-      style: { marginTop: 16 },
-    })
+  var stepItems = [
+    { title: 'Password', description: passwordOk ? 'Configured' : (passwordOk === false ? 'Not set' : 'Checking...'), status: stepStatus(0) },
+    { title: 'Connection', description: connStatus && !connStatus.error ? 'Connected' : (connStatus && connStatus.error ? 'Failed' : 'Pending'), status: stepStatus(1) },
+    { title: 'Event Storage', description: isEventsEnabled ? 'Enabled' : (evtConfig && !isEventsEnabled ? 'Disabled' : 'Pending'), status: stepStatus(2) },
+    { title: 'Ready', description: setupComplete ? 'All set' : '', status: stepStatus(3) },
+  ];
+
+  return h('div', { className: 'setup-wizard' },
+    h('div', { className: 'setup-wizard-header' },
+      h('h2', { style: { margin: '0 0 4px', fontSize: 20, fontWeight: 700 } }, 'Keycloak Setup'),
+      h('p', { style: { margin: 0, color: '#65657B', fontSize: 14 } }, 'Configure authentication event tracking in a few steps')
+    ),
+    h(Steps, {
+      current: currentStep,
+      items: stepItems,
+      style: { margin: '24px 0' },
+      onChange: function(step) {
+        if (step < currentStep) setCurrentStep(step);
+      },
+    }),
+    renderStepContent()
   );
 }
 
@@ -698,12 +928,8 @@ function LoginAuditTab(props) {
   var _columnFilteredRows = useState(null);
   var columnFilteredRows = _columnFilteredRows[0]; var setColumnFilteredRows = _columnFilteredRows[1];
 
-  // Keycloak connection diagnostics
-  var _kcStatus = useState(null);
-  var kcStatus = _kcStatus[0]; var setKcStatus = _kcStatus[1];
-
-  var _kcTesting = useState(false);
-  var kcTesting = _kcTesting[0]; var setKcTesting = _kcTesting[1];
+  var _showWizard = useState(!config.hasKeycloak);
+  var showWizard = _showWizard[0]; var setShowWizard = _showWizard[1];
 
   var outcomeChartRef = useRef(null);
   var eventChartRef = useRef(null);
@@ -712,24 +938,10 @@ function LoginAuditTab(props) {
 
   var hasKeycloak = config.hasKeycloak;
 
-  function testKeycloakConnection() {
-    setKcTesting(true);
-    setKcStatus(null);
-    apiGet('api/keycloak-status')
-      .then(function(data) {
-        setKcStatus(data);
-        setKcTesting(false);
-        if (data.error) {
-          message.error('Keycloak: ' + data.error);
-        } else {
-          message.success('Keycloak connection verified — all checks passed');
-        }
-      })
-      .catch(function(err) {
-        setKcStatus({ error: err.message });
-        setKcTesting(false);
-      });
-  }
+  // Show wizard automatically when Keycloak isn't configured
+  useEffect(function() {
+    if (!hasKeycloak) setShowWizard(true);
+  }, [hasKeycloak]);
 
   function handleFetch() {
     setLoading(true);
@@ -908,82 +1120,33 @@ function LoginAuditTab(props) {
 
   var filterLabel = tableFilter ? tableFilter.value : null;
 
-  // Build the Keycloak status diagnostic display
-  function renderKcDiagnostics() {
-    if (!kcStatus) return null;
-    var steps = [
-      { label: 'KEYCLOAK_PASSWORD set', ok: kcStatus.passwordSet },
-      { label: 'Host: ' + (kcStatus.hostExplicit || kcStatus.hostAutoDetected || 'not found'), ok: kcStatus.reachable },
-      { label: 'Authentication', ok: kcStatus.authSuccess },
-      { label: 'Realm accessible' + (kcStatus.userCount != null ? ' (' + kcStatus.userCount + ' users sampled)' : ''), ok: kcStatus.realmAccessible },
-      { label: 'Event query' + (kcStatus.eventSample != null ? ' (' + kcStatus.eventSample + ' sample events)' : ''), ok: kcStatus.eventSample != null },
-    ];
-    return h('div', { style: { marginTop: 12 } },
-      steps.map(function(step, i) {
-        var icon = step.ok ? '\u2705' : (kcStatus.error && !step.ok ? '\u274C' : '\u2B1C');
-        return h('div', { key: i, style: { fontSize: 13, marginBottom: 2 } }, icon + ' ' + step.label);
+  // If wizard is showing, render it
+  if (showWizard) {
+    return h('div', { className: 'tab-content' },
+      h(SetupWizard, {
+        onComplete: function() {
+          setShowWizard(false);
+          // Auto-fetch after wizard completes
+          setTimeout(function() { handleFetch(); }, 300);
+        },
       }),
-      kcStatus.error ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#fff2f0', border: '1px solid #ffccc7', borderRadius: 4, fontSize: 13, color: '#C20A29' } }, kcStatus.error) : null,
-      !kcStatus.error ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 4, fontSize: 13, color: '#28A464' } }, 'All checks passed — Keycloak is ready.') : null,
-      !kcStatus.error && kcStatus.eventSample === 0 ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 4, fontSize: 13, color: '#ad8b00' } },
-        'No events found. Event storage may be disabled. Click "Fetch Login Events" — if no results appear, the app will offer to enable it automatically.'
-      ) : null,
-      kcStatus.tokenTests ? h('div', { style: { marginTop: 8 } },
-        h('div', { style: { fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#65657B' } }, 'Raw token endpoint tests:'),
-        kcStatus.tokenTests.map(function(t, i) {
-          var ok = t.status === 200;
-          return h('div', { key: i, style: { fontSize: 12, marginBottom: 4, padding: '4px 8px', background: ok ? '#f6ffed' : '#fafafa', borderRadius: 3, fontFamily: 'monospace', wordBreak: 'break-all' } },
-            h('span', { style: { fontWeight: 600 } }, 'client_id=' + t.client_id + ' → ' + t.status),
-            h('div', { style: { color: '#8c8c8c', marginTop: 2 } }, t.response)
-          );
-        })
+      // Allow skipping if already configured
+      hasKeycloak ? h('div', { style: { textAlign: 'center', marginTop: 16 } },
+        h(Button, { type: 'link', onClick: function() { setShowWizard(false); } }, 'Skip setup \u2014 I\'m already configured')
       ) : null
     );
   }
 
   return h('div', { className: 'tab-content' },
-    // Keycloak not configured warning
-    !hasKeycloak ? h(Alert, {
-      type: 'warning',
-      showIcon: true,
-      message: 'Keycloak Not Configured',
-      description: h('div', null,
-        h('p', { style: { margin: '0 0 8px' } }, 'To enable login/logout audit tracking, you need to set the Keycloak admin password as an environment variable:'),
-        h('ol', { style: { margin: 0, paddingLeft: 20 } },
-          h('li', null, 'Go to ', h('strong', null, 'Account Settings'), ' → ', h('strong', null, 'User Environment Variables'), ' (left sidebar in the Domino UI)'),
-          h('li', null, 'In the ', h('strong', null, 'Set user environment variable'), ' section, enter:', h('ul', { style: { margin: '4px 0', paddingLeft: 20 } },
-            h('li', null, 'Name: ', h('code', null, 'KEYCLOAK_PASSWORD')),
-            h('li', null, 'Value: the Keycloak ', h('code', null, 'admin'), ' user password (ask your Domino platform administrator if you don\'t know it)')
-          )),
-          h('li', null, 'Click ', h('strong', null, 'Set variable')),
-          h('li', null, h('strong', null, 'Restart this app'), ' — environment variables are only loaded at startup')
-        ),
-        h('p', { style: { margin: '8px 0 0', color: '#8c8c8c' } }, 'The Keycloak host is auto-detected on Domino deployments. No URL configuration is needed.'),
-        h('div', { style: { marginTop: 12 } },
-          h(Button, {
-            size: 'small',
-            loading: kcTesting,
-            onClick: testKeycloakConnection,
-          }, 'Test Keycloak Connection'),
-          renderKcDiagnostics()
-        )
-      ),
-      style: { marginBottom: 16 },
-    }) : null,
-
-    // Show test connection option even when hasKeycloak is true (for diagnostics)
-    hasKeycloak ? h('div', { style: { marginBottom: 12 } },
+    // Reconfigure link
+    h('div', { style: { marginBottom: 12, display: 'flex', justifyContent: 'flex-end' } },
       h(Button, {
         size: 'small',
-        type: 'default',
-        loading: kcTesting,
-        onClick: testKeycloakConnection,
-        style: { marginRight: 8 },
-      }, 'Test Keycloak Connection'),
-      kcStatus && !kcStatus.error ? h(Tag, { color: 'green' }, 'Connected') : null,
-      kcStatus && kcStatus.error ? h(Tag, { color: 'red' }, 'Error') : null,
-      renderKcDiagnostics()
-    ) : null,
+        type: 'link',
+        onClick: function() { setShowWizard(true); },
+        style: { fontSize: 12, padding: 0, height: 'auto' },
+      }, 'Keycloak Setup Wizard')
+    ),
 
     // Controls
     h('div', { className: 'panel' },
@@ -1013,8 +1176,7 @@ function LoginAuditTab(props) {
             type: 'primary',
             onClick: handleFetch,
             loading: loading,
-            disabled: !hasKeycloak,
-          }, !hasKeycloak ? 'Keycloak Not Configured' : 'Fetch Login Events')
+          }, 'Fetch Login Events')
         )
       )
     ),
@@ -1146,7 +1308,15 @@ function LoginAuditTab(props) {
       })
     ) : null,
 
-    result && result.status === 'empty' ? h(KeycloakEventSetup) : null
+    result && result.status === 'empty' ? h('div', null,
+      h(Empty, { description: 'No login events found for the selected date range.' }),
+      h('div', { style: { textAlign: 'center', marginTop: 16 } },
+        h(Button, { type: 'primary', onClick: function() { setShowWizard(true); } }, 'Run Setup Wizard'),
+        h('p', { style: { marginTop: 8, fontSize: 12, color: '#8c8c8c' } },
+          'Event storage may need to be enabled. The wizard will check and fix this for you.'
+        )
+      )
+    ) : null
   );
 }
 
@@ -1163,7 +1333,7 @@ function AboutPanel() {
         h('p', null, h('strong', null, 'Domino Audit Trail Exporter'), ' allows you to export Domino Audit Trail data into JSON, CSV, and Parquet formats with full metadata flattening.'),
         h('ul', null,
           h('li', null, 'Uses the official Domino Audit Trail API'),
-          h('li', null, h('strong', null, 'Login Audit tab'), ' queries Keycloak for login/logout events (21 CFR Part 11 compliance)'),
+          h('li', null, h('strong', null, 'Authentication Events tab'), ' queries Keycloak for login/logout events (21 CFR Part 11 compliance)'),
           h('li', null, 'Tracks successful and failed authentication attempts with IP, session, and user details'),
           h('li', null, 'Export data as CSV or 21 CFR Part 11 compliant PDF reports'),
           h('li', null, 'Metadata is flattened dynamically \u2014 new Domino fields appear automatically')
