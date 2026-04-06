@@ -271,20 +271,38 @@ def _get_keycloak_admin():
     server_url = host if host.startswith("http") else f"http://{host}"
     server_url = server_url.rstrip("/") + (detected_path or "/auth/")
 
-    logger.info("Connecting to Keycloak at %s as user '%s'", server_url, username)
-    try:
-        admin = KCAdmin(
-            server_url=server_url,
-            username=username,
-            password=password,
-            realm_name="master",
-            verify=False,
-        )
-        logger.info("Keycloak admin connection successful")
-        return admin, realm
-    except Exception as e:
-        logger.error("Keycloak admin connection failed: %s", e)
-        raise
+    # Try multiple auth strategies:
+    # 1. master realm (standard Keycloak admin)
+    # 2. target realm directly (some Domino deployments use realm-specific admin)
+    auth_strategies = [
+        ("master", username, password),
+        (realm, username, password),
+    ]
+
+    last_error = None
+    for auth_realm, auth_user, auth_pass in auth_strategies:
+        logger.info("Connecting to Keycloak at %s as user '%s' in realm '%s'",
+                     server_url, auth_user, auth_realm)
+        try:
+            admin = KCAdmin(
+                server_url=server_url,
+                username=auth_user,
+                password=auth_pass,
+                realm_name=auth_realm,
+                verify=False,
+            )
+            # Verify we can actually access the target realm
+            admin.connection.realm_name = realm
+            admin.get_users({"max": 1})
+            logger.info("Keycloak admin connection successful (auth realm: %s)", auth_realm)
+            return admin, realm
+        except Exception as e:
+            logger.info("Keycloak auth via realm '%s' failed: %s", auth_realm, e)
+            last_error = e
+            continue
+
+    logger.error("All Keycloak auth strategies failed. Last error: %s", last_error)
+    raise last_error
 
 
 def _build_keycloak_user_map(admin, realm):
@@ -491,25 +509,24 @@ def keycloak_status():
 
     status["reachable"] = True
 
-    # Step 2: test auth
+    # Step 2: test auth + realm access (_get_keycloak_admin tries multiple strategies)
     try:
         admin, realm = _get_keycloak_admin()
         if admin is None:
             status["error"] = "Admin connection returned None — check host and password."
             return status
         status["authSuccess"] = True
+        status["realmAccessible"] = True
     except Exception as e:
-        status["error"] = f"Authentication failed: {e}"
+        status["error"] = f"Authentication/realm access failed: {e}"
         return status
 
-    # Step 3: test realm access
+    # Step 3: count users to verify depth of access
     try:
-        admin.connection.realm_name = realm
         users = admin.get_users({"max": 5})
-        status["realmAccessible"] = True
         status["userCount"] = len(users)
     except Exception as e:
-        status["error"] = f"Realm '{realm}' access failed: {e}"
+        status["error"] = f"User query in realm '{realm}' failed: {e}"
         return status
 
     # Step 4: test event query
