@@ -813,6 +813,10 @@ function LoginAuditTab(props) {
       }),
       kcStatus.error ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#fff2f0', border: '1px solid #ffccc7', borderRadius: 4, fontSize: 13, color: '#C20A29' } }, kcStatus.error) : null,
       !kcStatus.error ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 4, fontSize: 13, color: '#28A464' } }, 'All checks passed — Keycloak is ready.') : null,
+      !kcStatus.error && kcStatus.eventSample === 0 ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 4, fontSize: 13, color: '#ad8b00' } },
+        'No events found. If this is unexpected, verify that event storage is enabled in the Keycloak Admin Console: ',
+        h('strong', null, 'DominoRealm → Realm settings → Events → Save events = ON')
+      ) : null,
       kcStatus.tokenTests ? h('div', { style: { marginTop: 8 } },
         h('div', { style: { fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#65657B' } }, 'Raw token endpoint tests:'),
         kcStatus.tokenTests.map(function(t, i) {
@@ -1021,7 +1025,29 @@ function LoginAuditTab(props) {
       })
     ) : null,
 
-    result && result.status === 'empty' ? h(Empty, { description: result.message }) : null
+    result && result.status === 'empty' ? h('div', null,
+      h(Empty, { description: result.message }),
+      h(Alert, {
+        type: 'info',
+        showIcon: true,
+        message: 'Enable Keycloak Event Storage',
+        description: h('div', null,
+          h('p', { style: { margin: '0 0 8px' } }, 'Keycloak is connected but no events were found. By default, Keycloak logs events to stdout but does not persist them for API queries. To enable event storage:'),
+          h('ol', { style: { margin: 0, paddingLeft: 20 } },
+            h('li', null, 'Open the ', h('strong', null, 'Keycloak Admin Console'), ' and switch to the ', h('strong', null, 'DominoRealm')),
+            h('li', null, 'Go to ', h('strong', null, 'Realm settings'), ' → ', h('strong', null, 'Events'), ' tab'),
+            h('li', null, 'Under ', h('strong', null, 'User events settings'), ':', h('ul', { style: { margin: '4px 0', paddingLeft: 20 } },
+              h('li', null, 'Toggle ', h('strong', null, 'Save events'), ' to ', h('strong', null, 'ON')),
+              h('li', null, 'Ensure these event types are selected: ', h('code', null, 'LOGIN'), ', ', h('code', null, 'LOGIN_ERROR'), ', ', h('code', null, 'LOGOUT'), ', ', h('code', null, 'LOGOUT_ERROR')),
+              h('li', null, 'Set ', h('strong', null, 'Expiration'), ' to desired retention period (e.g., 30 days)')
+            )),
+            h('li', null, 'Click ', h('strong', null, 'Save'))
+          ),
+          h('p', { style: { margin: '8px 0 0', color: '#8c8c8c' } }, 'Note: Only new events will be captured after enabling. Past events are not retroactively stored.')
+        ),
+        style: { marginTop: 16 },
+      })
+    ) : null
   );
 }
 
