@@ -247,18 +247,24 @@ def _get_keycloak_admin():
     Returns (admin, realm)."""
     from keycloak import KeycloakAdmin as KCAdmin
 
-    host = os.environ.get("KEYCLOAK_HOST", "")
-    username = os.environ.get("KEYCLOAK_USERNAME", "keycloak")
-    password = os.environ.get("KEYCLOAK_PASSWORD", "")
-    realm = os.environ.get("KEYCLOAK_REALM", "DominoRealm")
+    host = os.environ.get("KEYCLOAK_HOST", "").strip()
+    username = os.environ.get("KEYCLOAK_USERNAME", "keycloak").strip()
+    password = os.environ.get("KEYCLOAK_PASSWORD", "").strip()
+    realm = os.environ.get("KEYCLOAK_REALM", "DominoRealm").strip()
 
     logger.info("Keycloak config: host=%s, username=%s, password=%s, realm=%s",
                 host or "(auto-detect)", username, "set" if password else "NOT SET", realm)
 
-    # Auto-detect Keycloak host from common Domino internal service URLs
+    # Auto-detect Keycloak host — try internal service URLs first, then
+    # fall back to the external Domino host (which also proxies /auth/)
     detected_path = "/auth/"
     if not host:
-        host, detected_path = _probe_keycloak_host()
+        # Build candidate list: internal k8s services + external Domino URL
+        candidates = list(KEYCLOAK_PROBE_CANDIDATES)
+        domino_host = get_default_domino_host()
+        if domino_host:
+            candidates.append(domino_host)
+        host, detected_path = _probe_keycloak_host(candidates=candidates)
         if host:
             logger.info("Keycloak auto-detected at %s (path: %s)", host, detected_path)
         else:
@@ -271,38 +277,49 @@ def _get_keycloak_admin():
     server_url = host if host.startswith("http") else f"http://{host}"
     server_url = server_url.rstrip("/") + (detected_path or "/auth/")
 
-    # Try multiple auth strategies:
-    # 1. master realm (standard Keycloak admin)
-    # 2. target realm directly (some Domino deployments use realm-specific admin)
-    auth_strategies = [
-        ("master", username, password),
-        (realm, username, password),
-    ]
+    # Build list of (auth_realm, username, client_id) combinations to try.
+    # Domino deployments vary: some use "admin-cli" direct grants, others
+    # disable that and require a different client.
+    usernames_to_try = [username]
+    for alt in ["admin", "keycloak"]:
+        if alt != username:
+            usernames_to_try.append(alt)
+
+    client_ids = ["admin-cli", "security-admin-console"]
+    realms_to_try = ["master", realm]
 
     last_error = None
-    for auth_realm, auth_user, auth_pass in auth_strategies:
-        logger.info("Connecting to Keycloak at %s as user '%s' in realm '%s'",
-                     server_url, auth_user, auth_realm)
-        try:
-            admin = KCAdmin(
-                server_url=server_url,
-                username=auth_user,
-                password=auth_pass,
-                realm_name=auth_realm,
-                verify=False,
-            )
-            # Verify we can actually access the target realm
-            admin.connection.realm_name = realm
-            admin.get_users({"max": 1})
-            logger.info("Keycloak admin connection successful (auth realm: %s)", auth_realm)
-            return admin, realm
-        except Exception as e:
-            logger.info("Keycloak auth via realm '%s' failed: %s", auth_realm, e)
-            last_error = e
-            continue
+    attempts = []
+    for auth_realm in realms_to_try:
+        for auth_user in usernames_to_try:
+            for client_id in client_ids:
+                logger.info("Trying Keycloak auth: server=%s user='%s' realm='%s' client='%s'",
+                             server_url, auth_user, auth_realm, client_id)
+                try:
+                    admin = KCAdmin(
+                        server_url=server_url,
+                        username=auth_user,
+                        password=password,
+                        realm_name=auth_realm,
+                        client_id=client_id,
+                        verify=False,
+                    )
+                    # Verify we can actually access the target realm
+                    admin.connection.realm_name = realm
+                    admin.get_users({"max": 1})
+                    logger.info("Keycloak connected: user='%s' auth_realm='%s' client='%s'",
+                                 auth_user, auth_realm, client_id)
+                    return admin, realm
+                except Exception as e:
+                    short = str(e)[:120]
+                    msg = f"user='{auth_user}' realm='{auth_realm}' client='{client_id}': {short}"
+                    logger.info("Keycloak auth failed — %s", msg)
+                    attempts.append(msg)
+                    last_error = e
 
-    logger.error("All Keycloak auth strategies failed. Last error: %s", last_error)
-    raise last_error
+    detail = "; ".join(attempts)
+    logger.error("All Keycloak auth strategies failed: %s", detail)
+    raise Exception(f"All auth strategies failed — {detail}")
 
 
 def _build_keycloak_user_map(admin, realm):
@@ -437,8 +454,12 @@ def keycloak_available():
         logger.info("keycloak_available: explicit host=%s, password=set -> True", host)
         return True
 
-    # Try auto-detect using the same candidates and path variants as _get_keycloak_admin
-    detected_host, detected_path = _probe_keycloak_host()
+    # Try auto-detect using the same candidates as _get_keycloak_admin
+    candidates = list(KEYCLOAK_PROBE_CANDIDATES)
+    domino_host = get_default_domino_host()
+    if domino_host:
+        candidates.append(domino_host)
+    detected_host, detected_path = _probe_keycloak_host(candidates=candidates)
     if detected_host:
         logger.info("keycloak_available: auto-detected host=%s (path=%s) -> True", detected_host, detected_path)
         return True
@@ -508,6 +529,34 @@ def keycloak_status():
             return status
 
     status["reachable"] = True
+
+    # Step 1b: raw token test to show exactly what the token endpoint returns
+    password = os.environ.get("KEYCLOAK_PASSWORD", "")
+    username = os.environ.get("KEYCLOAK_USERNAME", "keycloak")
+    server_url = (host if host.startswith("http") else f"http://{host}").rstrip("/")
+    server_url += path_variant or "/auth/"
+    token_url = f"{server_url}realms/master/protocol/openid-connect/token"
+    raw_token_tests = []
+    for client_id in ["admin-cli", "security-admin-console"]:
+        try:
+            r = requests.post(token_url, data={
+                "grant_type": "password",
+                "client_id": client_id,
+                "username": username,
+                "password": password,
+            }, timeout=5, verify=False)
+            raw_token_tests.append({
+                "client_id": client_id,
+                "status": r.status_code,
+                "response": r.text[:300],
+            })
+        except Exception as e:
+            raw_token_tests.append({
+                "client_id": client_id,
+                "status": "error",
+                "response": str(e)[:300],
+            })
+    status["tokenTests"] = raw_token_tests
 
     # Step 2: test auth + realm access (_get_keycloak_admin tries multiple strategies)
     try:

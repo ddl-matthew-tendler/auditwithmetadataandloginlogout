@@ -812,7 +812,17 @@ function LoginAuditTab(props) {
         return h('div', { key: i, style: { fontSize: 13, marginBottom: 2 } }, icon + ' ' + step.label);
       }),
       kcStatus.error ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#fff2f0', border: '1px solid #ffccc7', borderRadius: 4, fontSize: 13, color: '#C20A29' } }, kcStatus.error) : null,
-      !kcStatus.error ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 4, fontSize: 13, color: '#28A464' } }, 'All checks passed — Keycloak is ready.') : null
+      !kcStatus.error ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 4, fontSize: 13, color: '#28A464' } }, 'All checks passed — Keycloak is ready.') : null,
+      kcStatus.tokenTests ? h('div', { style: { marginTop: 8 } },
+        h('div', { style: { fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#65657B' } }, 'Raw token endpoint tests:'),
+        kcStatus.tokenTests.map(function(t, i) {
+          var ok = t.status === 200;
+          return h('div', { key: i, style: { fontSize: 12, marginBottom: 4, padding: '4px 8px', background: ok ? '#f6ffed' : '#fafafa', borderRadius: 3, fontFamily: 'monospace', wordBreak: 'break-all' } },
+            h('span', { style: { fontWeight: 600 } }, 'client_id=' + t.client_id + ' → ' + t.status),
+            h('div', { style: { color: '#8c8c8c', marginTop: 2 } }, t.response)
+          );
+        })
+      ) : null
     );
   }
 
