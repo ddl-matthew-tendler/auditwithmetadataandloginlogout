@@ -4,8 +4,12 @@
 import os
 import json
 import time
+import logging
 import datetime
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 import requests
 import pandas as pd
@@ -222,6 +226,9 @@ def _get_keycloak_admin():
     password = os.environ.get("KEYCLOAK_PASSWORD", "")
     realm = os.environ.get("KEYCLOAK_REALM", "DominoRealm")
 
+    logger.info("Keycloak config: host=%s, username=%s, password=%s, realm=%s",
+                host or "(auto-detect)", username, "set" if password else "NOT SET", realm)
+
     # Auto-detect Keycloak host from common Domino internal service URLs
     if not host:
         candidates = [
@@ -232,27 +239,36 @@ def _get_keycloak_admin():
         for candidate in candidates:
             try:
                 r = requests.get(candidate + "/auth/", timeout=2)
+                logger.info("Keycloak probe %s -> status %s", candidate, r.status_code)
                 if r.status_code < 500:
                     host = candidate
                     break
-            except Exception:
+            except Exception as e:
+                logger.info("Keycloak probe %s -> failed: %s", candidate, e)
                 continue
 
     if not host or not password:
+        logger.warning("Keycloak not configured: host=%s, password=%s", host or "NONE", "set" if password else "NOT SET")
         return None, realm
 
     server_url = host if host.startswith("http") else f"http://{host}"
     if not server_url.endswith("/auth/"):
         server_url = server_url.rstrip("/") + "/auth/"
 
-    admin = KCAdmin(
-        server_url=server_url,
-        username=username,
-        password=password,
-        realm_name="master",
-        verify=True,
-    )
-    return admin, realm
+    logger.info("Connecting to Keycloak at %s as user '%s'", server_url, username)
+    try:
+        admin = KCAdmin(
+            server_url=server_url,
+            username=username,
+            password=password,
+            realm_name="master",
+            verify=False,
+        )
+        logger.info("Keycloak admin connection successful")
+        return admin, realm
+    except Exception as e:
+        logger.error("Keycloak admin connection failed: %s", e)
+        raise
 
 
 def _build_keycloak_user_map(admin, realm):
