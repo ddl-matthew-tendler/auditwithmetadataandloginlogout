@@ -388,7 +388,23 @@ def fetch_keycloak_login_events(
         if len(events) < page_size:
             break
 
-    return all_events[:max_events], user_map, None
+    # Deduplicate events – Keycloak can return the same event more than once
+    # (e.g. multiple client-level records for a single user login).
+    seen = set()
+    deduped = []
+    for evt in all_events[:max_events]:
+        key = (
+            evt.get("time"),
+            evt.get("userId", ""),
+            evt.get("type", ""),
+            evt.get("sessionId", ""),
+            evt.get("ipAddress", ""),
+        )
+        if key not in seen:
+            seen.add(key)
+            deduped.append(evt)
+
+    return deduped, user_map, None
 
 
 def flatten_keycloak_events(events, user_map=None):
