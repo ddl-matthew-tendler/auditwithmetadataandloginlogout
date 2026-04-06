@@ -388,17 +388,20 @@ def fetch_keycloak_login_events(
         if len(events) < page_size:
             break
 
-    # Deduplicate events – Keycloak can return the same event more than once
-    # (e.g. multiple client-level records for a single user login).
+    # Deduplicate events – Domino's OIDC flow fires two Keycloak LOGIN
+    # events per actual user login (offline-token + OIDC callback), with
+    # different redirect_uri but same user / session / second.  We round
+    # the millisecond timestamp to the nearest second so both collapse.
     seen = set()
     deduped = []
     for evt in all_events[:max_events]:
+        raw_ts = evt.get("time")
+        ts_sec = raw_ts // 1000 if isinstance(raw_ts, (int, float)) else raw_ts
         key = (
-            evt.get("time"),
+            ts_sec,
             evt.get("userId", ""),
             evt.get("type", ""),
             evt.get("sessionId", ""),
-            evt.get("ipAddress", ""),
         )
         if key not in seen:
             seen.add(key)

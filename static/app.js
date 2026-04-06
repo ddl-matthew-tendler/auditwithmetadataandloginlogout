@@ -276,10 +276,6 @@ function TopNav(props) {
       h('span', { className: 'top-nav-title' }, 'Audit Trail Exporter')
     ),
     h('div', { className: 'top-nav-right' },
-      h('div', { className: 'dummy-data-toggle' },
-        h('span', null, 'Dummy Data'),
-        h(Switch, { checked: props.useDummy, onChange: props.onToggleDummy, size: 'small' })
-      ),
       props.projectContext ? h('span', { className: 'top-nav-context' }, props.projectContext) : null
     )
   );
@@ -329,7 +325,6 @@ function buildTableColumns(rows, columnNames) {
 // ---------------------------------------------------------------------------
 function ExportTab(props) {
   var config = props.config;
-  var useDummy = props.useDummy;
 
   // Host auto-detected from backend env or browser origin
   var dominoHost = config.dominoHost || window.location.origin;
@@ -362,17 +357,6 @@ function ExportTab(props) {
   var filteredRows = _filteredRows[0]; var setFilteredRows = _filteredRows[1];
 
   function handleExport() {
-    if (useDummy) {
-      setLoading(true);
-      setFilteredRows(null);
-      setTimeout(function() {
-        setResult(generateMockExportResult());
-        setLoading(false);
-        message.success('Export complete (dummy data)');
-      }, 1500);
-      return;
-    }
-
     setLoading(true);
     setError(null);
     setResult(null);
@@ -686,7 +670,6 @@ function KeycloakEventSetup() {
 // ---------------------------------------------------------------------------
 function LoginAuditTab(props) {
   var config = props.config;
-  var useDummy = props.useDummy;
 
   var _dates = useState([dayjs().subtract(30, 'day'), dayjs()]);
   var dateRange = _dates[0]; var setDateRange = _dates[1];
@@ -749,18 +732,6 @@ function LoginAuditTab(props) {
   }
 
   function handleFetch() {
-    if (useDummy) {
-      setLoading(true);
-      setTimeout(function() {
-        var data = generateMockLoginResult();
-        setResult(data);
-        setLoading(false);
-        setTableFilter(null);
-        message.success('Login audit loaded (dummy data)');
-      }, 1000);
-      return;
-    }
-
     setLoading(true);
     setError(null);
     setResult(null);
@@ -972,7 +943,7 @@ function LoginAuditTab(props) {
 
   return h('div', { className: 'tab-content' },
     // Keycloak not configured warning
-    !hasKeycloak && !useDummy ? h(Alert, {
+    !hasKeycloak ? h(Alert, {
       type: 'warning',
       showIcon: true,
       message: 'Keycloak Not Configured',
@@ -1001,7 +972,7 @@ function LoginAuditTab(props) {
     }) : null,
 
     // Show test connection option even when hasKeycloak is true (for diagnostics)
-    hasKeycloak && !useDummy ? h('div', { style: { marginBottom: 12 } },
+    hasKeycloak ? h('div', { style: { marginBottom: 12 } },
       h(Button, {
         size: 'small',
         type: 'default',
@@ -1025,7 +996,7 @@ function LoginAuditTab(props) {
           h(RangePicker, { value: dateRange, onChange: setDateRange, style: { width: '100%' } })
         ),
         h('div', { className: 'config-field' },
-          h('label', null, 'Include All Auth Events'),
+          h('label', null, 'Event Scope'),
           h('div', null,
             h(Switch, {
               checked: includeAllAuth,
@@ -1033,7 +1004,7 @@ function LoginAuditTab(props) {
               size: 'small',
             }),
             h('span', { style: { marginLeft: 8, color: '#65657B', fontSize: 12 } },
-              includeAllAuth ? 'Includes token exchanges & client logins' : 'Login & logout only'
+              includeAllAuth ? 'All auth events (token exchanges, registrations, errors)' : 'Login & logout events only'
             )
           )
         ),
@@ -1042,8 +1013,8 @@ function LoginAuditTab(props) {
             type: 'primary',
             onClick: handleFetch,
             loading: loading,
-            disabled: !useDummy && !hasKeycloak,
-          }, !useDummy && !hasKeycloak ? 'Keycloak Not Configured' : 'Fetch Login Events')
+            disabled: !hasKeycloak,
+          }, !hasKeycloak ? 'Keycloak Not Configured' : 'Fetch Login Events')
         )
       )
     ),
@@ -1052,7 +1023,7 @@ function LoginAuditTab(props) {
     loading ? h('div', { className: 'loading-container' }, h(Spin, { size: 'large' }), h('p', null, 'Querying Keycloak events...')) : null,
 
     result && result.status === 'ok' ? h('div', null,
-      // Stats row
+      // Stats row — cards act as filters when clicked
       h('div', { className: 'stats-row' },
         h(StatCard, {
           label: columnFilteredRows !== null && columnFilteredRows.length !== filteredRows.length ? 'Showing / Total Events' : 'Total Events',
@@ -1060,16 +1031,26 @@ function LoginAuditTab(props) {
             ? columnFilteredRows.length.toLocaleString() + ' / ' + (result.eventCount || 0).toLocaleString()
             : (result.eventCount || 0).toLocaleString(),
           color: columnFilteredRows !== null && columnFilteredRows.length !== filteredRows.length ? 'info' : 'primary',
+          active: !tableFilter,
+          onClick: function() { setTableFilter(null); },
         }),
         h(StatCard, {
           label: 'Successful Logins',
           value: (result.outcomeRollup || []).reduce(function(s, r) { return r.outcome === 'SUCCESS' ? s + r.count : s; }, 0).toLocaleString(),
           color: 'success',
+          active: tableFilter && tableFilter.type === 'outcome' && tableFilter.value === 'SUCCESS',
+          onClick: function() {
+            setTableFilter(tableFilter && tableFilter.type === 'outcome' && tableFilter.value === 'SUCCESS' ? null : { type: 'outcome', value: 'SUCCESS' });
+          },
         }),
         h(StatCard, {
           label: 'Failed Attempts',
           value: (result.outcomeRollup || []).reduce(function(s, r) { return r.outcome === 'FAILURE' ? s + r.count : s; }, 0).toLocaleString(),
           color: 'error',
+          active: tableFilter && tableFilter.type === 'outcome' && tableFilter.value === 'FAILURE',
+          onClick: function() {
+            setTableFilter(tableFilter && tableFilter.type === 'outcome' && tableFilter.value === 'FAILURE' ? null : { type: 'outcome', value: 'FAILURE' });
+          },
         }),
         h(StatCard, {
           label: 'Unique Users', value: (result.actorRollup || []).length, color: 'info',
@@ -1209,9 +1190,6 @@ function App() {
   var _connected = useState(false);
   var connected = _connected[0]; var setConnected = _connected[1];
 
-  var _useDummy = useState(true);
-  var useDummy = _useDummy[0]; var setUseDummy = _useDummy[1];
-
   // Fetch config on mount
   useEffect(function() {
     apiGet('api/config')
@@ -1222,46 +1200,25 @@ function App() {
         }
         setConfig(data);
         setConnected(true);
-        // Stay in dummy mode if no API key (not on Domino)
-        setUseDummy(!data.hasApiKey);
       })
       .catch(function() {
-        setConfig(MOCK_CONFIG);
         setConnected(false);
-        setUseDummy(true);
       });
   }, []);
 
-  function handleToggleDummy(checked) {
-    setUseDummy(checked);
-    if (checked) {
-      setConfig(MOCK_CONFIG);
-    } else {
-      apiGet('api/config')
-        .then(function(data) { setConfig(data); })
-        .catch(function() {
-          message.error('Cannot reach backend. Staying in dummy data mode.');
-          setUseDummy(true);
-          setConfig(MOCK_CONFIG);
-        });
-    }
-  }
-
   var projectContext = config.projectOwner && config.projectName
     ? config.projectOwner + '/' + config.projectName : '';
-
-  var effectiveConfig = useDummy ? MOCK_CONFIG : config;
 
   var tabItems = [
     {
       key: 'export',
       label: 'Export',
-      children: h(ExportTab, { config: effectiveConfig, useDummy: useDummy }),
+      children: h(ExportTab, { config: config }),
     },
     {
       key: 'login-audit',
-      label: 'Login Audit',
-      children: h(LoginAuditTab, { config: effectiveConfig, useDummy: useDummy }),
+      label: 'Authentication Events',
+      children: h(LoginAuditTab, { config: config }),
     },
   ];
 
@@ -1269,8 +1226,6 @@ function App() {
     h('div', { className: 'app-container' },
       h(TopNav, {
         connected: connected,
-        useDummy: useDummy,
-        onToggleDummy: handleToggleDummy,
         projectContext: projectContext,
       }),
       h('div', { className: 'app-body' },
