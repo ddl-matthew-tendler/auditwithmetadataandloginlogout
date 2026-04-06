@@ -277,49 +277,51 @@ def _get_keycloak_admin():
     server_url = host if host.startswith("http") else f"http://{host}"
     server_url = server_url.rstrip("/") + (detected_path or "/auth/")
 
-    # Build list of (auth_realm, username, client_id) combinations to try.
-    # Domino deployments vary: some use "admin-cli" direct grants, others
-    # disable that and require a different client.
-    usernames_to_try = [username]
-    for alt in ["admin", "keycloak"]:
-        if alt != username:
-            usernames_to_try.append(alt)
+    # Get token manually via raw HTTP POST — the python-keycloak library's
+    # built-in auth sends requests differently and fails on some deployments
+    # even when the token endpoint works fine with direct requests.
+    token_data = None
+    token_error = None
+    for auth_realm in ["master", realm]:
+        token_url = f"{server_url}realms/{auth_realm}/protocol/openid-connect/token"
+        logger.info("Requesting token from %s as user '%s'", token_url, username)
+        try:
+            r = requests.post(token_url, data={
+                "grant_type": "password",
+                "client_id": "admin-cli",
+                "username": username,
+                "password": password,
+            }, timeout=10, verify=False)
+            if r.status_code == 200:
+                token_data = r.json()
+                logger.info("Got token from realm '%s' (expires_in=%s)",
+                             auth_realm, token_data.get("expires_in"))
+                break
+            else:
+                token_error = f"realm='{auth_realm}': {r.status_code} {r.text[:200]}"
+                logger.info("Token request failed for %s", token_error)
+        except Exception as e:
+            token_error = f"realm='{auth_realm}': {e}"
+            logger.info("Token request error: %s", token_error)
 
-    client_ids = ["admin-cli", "security-admin-console"]
-    realms_to_try = ["master", realm]
+    if not token_data:
+        raise Exception(f"Could not get token — {token_error}")
 
-    last_error = None
-    attempts = []
-    for auth_realm in realms_to_try:
-        for auth_user in usernames_to_try:
-            for client_id in client_ids:
-                logger.info("Trying Keycloak auth: server=%s user='%s' realm='%s' client='%s'",
-                             server_url, auth_user, auth_realm, client_id)
-                try:
-                    admin = KCAdmin(
-                        server_url=server_url,
-                        username=auth_user,
-                        password=password,
-                        realm_name=auth_realm,
-                        client_id=client_id,
-                        verify=False,
-                    )
-                    # Verify we can actually access the target realm
-                    admin.connection.realm_name = realm
-                    admin.get_users({"max": 1})
-                    logger.info("Keycloak connected: user='%s' auth_realm='%s' client='%s'",
-                                 auth_user, auth_realm, client_id)
-                    return admin, realm
-                except Exception as e:
-                    short = str(e)[:120]
-                    msg = f"user='{auth_user}' realm='{auth_realm}' client='{client_id}': {short}"
-                    logger.info("Keycloak auth failed — %s", msg)
-                    attempts.append(msg)
-                    last_error = e
-
-    detail = "; ".join(attempts)
-    logger.error("All Keycloak auth strategies failed: %s", detail)
-    raise Exception(f"All auth strategies failed — {detail}")
+    # Create KeycloakAdmin with the manually obtained token
+    try:
+        admin = KCAdmin(
+            server_url=server_url,
+            token=token_data,
+            realm_name=realm,
+            verify=False,
+        )
+        # Verify access by fetching one user
+        admin.get_users({"max": 1})
+        logger.info("Keycloak admin connection successful with manual token")
+        return admin, realm
+    except Exception as e:
+        logger.error("KeycloakAdmin with manual token failed: %s", e)
+        raise
 
 
 def _build_keycloak_user_map(admin, realm):
