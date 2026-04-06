@@ -541,6 +541,147 @@ function ExportTab(props) {
 }
 
 // ---------------------------------------------------------------------------
+// Keycloak Event Setup Panel — auto-detects config and offers one-click enable
+// ---------------------------------------------------------------------------
+function KeycloakEventSetup() {
+  var _cfg = useState(null);
+  var evtConfig = _cfg[0]; var setEvtConfig = _cfg[1];
+
+  var _loading = useState(false);
+  var cfgLoading = _loading[0]; var setCfgLoading = _loading[1];
+
+  var _enabling = useState(false);
+  var enabling = _enabling[0]; var setEnabling = _enabling[1];
+
+  var _cfgError = useState(null);
+  var cfgError = _cfgError[0]; var setCfgError = _cfgError[1];
+
+  // Auto-check config on mount
+  useEffect(function() {
+    setCfgLoading(true);
+    apiGet('api/keycloak-events-config')
+      .then(function(data) { setEvtConfig(data); setCfgLoading(false); })
+      .catch(function(err) { setCfgError(err.message); setCfgLoading(false); });
+  }, []);
+
+  function handleEnable() {
+    setEnabling(true);
+    apiPost('api/keycloak-events-config/enable', {})
+      .then(function(data) {
+        setEnabling(false);
+        message.success(data.message);
+        // Refresh config
+        apiGet('api/keycloak-events-config')
+          .then(function(d) { setEvtConfig(d); });
+      })
+      .catch(function(err) {
+        setEnabling(false);
+        message.error('Failed to enable: ' + err.message);
+      });
+  }
+
+  var isEnabled = evtConfig && evtConfig.eventsEnabled;
+  var types = evtConfig ? (evtConfig.enabledEventTypes || []) : [];
+  var expDays = evtConfig ? Math.round((evtConfig.eventsExpiration || 0) / 86400) : 0;
+
+  return h('div', null,
+    h(Empty, { description: 'No login events found for the selected date range.' }),
+    h(Alert, {
+      type: isEnabled ? 'success' : 'info',
+      showIcon: true,
+      message: isEnabled ? 'Event Storage is Enabled' : 'Enable Keycloak Event Storage',
+      description: h('div', null,
+        cfgLoading ? h(Spin, { size: 'small' }) : null,
+
+        // Current status display
+        evtConfig && !cfgLoading ? h('div', { style: { marginBottom: 12 } },
+          h('div', { style: { display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 8 } },
+            h('div', { style: { fontSize: 13 } },
+              (isEnabled ? '\u2705' : '\u274C') + ' Save events: ',
+              h('strong', null, isEnabled ? 'ON' : 'OFF')
+            ),
+            h('div', { style: { fontSize: 13 } },
+              (types.length > 0 ? '\u2705' : '\u26A0\uFE0F') + ' Event types: ',
+              h('strong', null, types.length > 0 ? types.length + ' configured' : 'none')
+            ),
+            h('div', { style: { fontSize: 13 } },
+              (expDays > 0 ? '\u2705' : '\u26A0\uFE0F') + ' Retention: ',
+              h('strong', null, expDays > 0 ? expDays + ' days' : 'no expiration set')
+            )
+          ),
+          types.length > 0 ? h('div', { style: { marginBottom: 8 } },
+            types.map(function(t) {
+              return h(Tag, { key: t, style: { marginBottom: 4, fontSize: 11 } }, t);
+            })
+          ) : null
+        ) : null,
+
+        // One-click enable button
+        !isEnabled && !cfgLoading ? h('div', { style: { marginBottom: 12 } },
+          h(Button, {
+            type: 'primary',
+            loading: enabling,
+            onClick: handleEnable,
+            style: { marginRight: 12 },
+          }, 'Enable Event Storage Now'),
+          h('span', { style: { fontSize: 12, color: '#8c8c8c' } },
+            'Enables login/logout event persistence with 90-day retention via Keycloak Admin API'
+          )
+        ) : null,
+
+        // If enabled but 0 events, explain it's working now
+        isEnabled ? h('p', { style: { margin: '0 0 8px', color: '#28A464' } },
+          'Event storage is active. New login/logout events will be captured going forward. Try fetching again after some login activity has occurred.'
+        ) : null,
+
+        // Manual instructions as fallback
+        !isEnabled ? h(Collapse, {
+          items: [{
+            key: '1',
+            label: 'Manual setup instructions (if auto-enable fails)',
+            children: h('div', null,
+              h('p', { style: { margin: '0 0 8px' } }, 'In the Keycloak Admin Console:'),
+              h('ol', { style: { margin: 0, paddingLeft: 20 } },
+                h('li', null, 'Switch to the ', h('strong', null, 'DominoRealm'), ' (top-left dropdown)'),
+                h('li', null, 'Navigate to: ', h('strong', null, 'Realm settings'), ' → ', h('strong', null, 'Events'), ' tab'),
+                h('li', null, 'Click the ', h('strong', null, 'User events settings'), ' subtab'),
+                h('li', null, 'Toggle ', h('strong', null, 'Save events'), ' to ', h('strong', null, 'ON')),
+                h('li', null, 'Below the toggle, verify that these event types are listed:', h('div', { style: { margin: '4px 0 4px 8px' } },
+                  ['Login', 'Login error', 'Logout', 'Logout error', 'Code to token', 'Code to token error'].map(function(t) {
+                    return h(Tag, { key: t, style: { marginBottom: 2, fontSize: 11 } }, t);
+                  }),
+                  h('div', { style: { fontSize: 12, color: '#8c8c8c', marginTop: 4 } }, 'If any are missing, use the "Add saved types" button to add them')
+                )),
+                h('li', null, 'Click ', h('strong', null, 'Save')),
+                h('li', null, h('em', null, '(Optional)'), ' On the ', h('strong', null, 'Admin events settings'), ' subtab, verify ', h('strong', null, 'Save events'), ' is also ON for admin action auditing')
+              ),
+              h('p', { style: { margin: '8px 0 0', color: '#8c8c8c', fontSize: 12 } }, 'Note: Only new events are captured after enabling. Past events are not retroactively stored.')
+            ),
+          }],
+          style: { marginTop: 8, background: 'transparent' },
+          bordered: false,
+          size: 'small',
+        }) : null,
+
+        // Direct link to Keycloak console
+        evtConfig && evtConfig.consoleUrl ? h('div', { style: { marginTop: 8 } },
+          h('a', {
+            href: evtConfig.consoleUrl,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            style: { fontSize: 13 },
+          }, 'Open Keycloak Admin Console → Events settings \u2197')
+        ) : null,
+
+        cfgError ? h('div', { style: { marginTop: 8, color: '#C20A29', fontSize: 13 } }, 'Could not check config: ' + cfgError) : null
+      ),
+      style: { marginTop: 16 },
+    })
+  );
+}
+
+
+// ---------------------------------------------------------------------------
 // Login Audit Tab (21 CFR Part 11)
 // ---------------------------------------------------------------------------
 function LoginAuditTab(props) {
@@ -814,8 +955,7 @@ function LoginAuditTab(props) {
       kcStatus.error ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#fff2f0', border: '1px solid #ffccc7', borderRadius: 4, fontSize: 13, color: '#C20A29' } }, kcStatus.error) : null,
       !kcStatus.error ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 4, fontSize: 13, color: '#28A464' } }, 'All checks passed — Keycloak is ready.') : null,
       !kcStatus.error && kcStatus.eventSample === 0 ? h('div', { style: { marginTop: 8, padding: '8px 12px', background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 4, fontSize: 13, color: '#ad8b00' } },
-        'No events found. If this is unexpected, verify that event storage is enabled in the Keycloak Admin Console: ',
-        h('strong', null, 'DominoRealm → Realm settings → Events → Save events = ON')
+        'No events found. Event storage may be disabled. Click "Fetch Login Events" — if no results appear, the app will offer to enable it automatically.'
       ) : null,
       kcStatus.tokenTests ? h('div', { style: { marginTop: 8 } },
         h('div', { style: { fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#65657B' } }, 'Raw token endpoint tests:'),
@@ -1025,29 +1165,7 @@ function LoginAuditTab(props) {
       })
     ) : null,
 
-    result && result.status === 'empty' ? h('div', null,
-      h(Empty, { description: result.message }),
-      h(Alert, {
-        type: 'info',
-        showIcon: true,
-        message: 'Enable Keycloak Event Storage',
-        description: h('div', null,
-          h('p', { style: { margin: '0 0 8px' } }, 'Keycloak is connected but no events were found. By default, Keycloak logs events to stdout but does not persist them for API queries. To enable event storage:'),
-          h('ol', { style: { margin: 0, paddingLeft: 20 } },
-            h('li', null, 'Open the ', h('strong', null, 'Keycloak Admin Console'), ' and switch to the ', h('strong', null, 'DominoRealm')),
-            h('li', null, 'Go to ', h('strong', null, 'Realm settings'), ' → ', h('strong', null, 'Events'), ' tab'),
-            h('li', null, 'Under ', h('strong', null, 'User events settings'), ':', h('ul', { style: { margin: '4px 0', paddingLeft: 20 } },
-              h('li', null, 'Toggle ', h('strong', null, 'Save events'), ' to ', h('strong', null, 'ON')),
-              h('li', null, 'Ensure these event types are selected: ', h('code', null, 'LOGIN'), ', ', h('code', null, 'LOGIN_ERROR'), ', ', h('code', null, 'LOGOUT'), ', ', h('code', null, 'LOGOUT_ERROR')),
-              h('li', null, 'Set ', h('strong', null, 'Expiration'), ' to desired retention period (e.g., 30 days)')
-            )),
-            h('li', null, 'Click ', h('strong', null, 'Save'))
-          ),
-          h('p', { style: { margin: '8px 0 0', color: '#8c8c8c' } }, 'Note: Only new events will be captured after enabling. Past events are not retroactively stored.')
-        ),
-        style: { marginTop: 16 },
-      })
-    ) : null
+    result && result.status === 'empty' ? h(KeycloakEventSetup) : null
   );
 }
 

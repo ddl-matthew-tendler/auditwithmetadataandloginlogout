@@ -591,6 +591,144 @@ def keycloak_status():
     return status
 
 
+# ---------------------------------------------------------------------------
+# Keycloak Event Config Management
+# ---------------------------------------------------------------------------
+
+RECOMMENDED_EVENT_TYPES = [
+    "LOGIN", "LOGIN_ERROR", "LOGOUT", "LOGOUT_ERROR",
+    "CODE_TO_TOKEN", "CODE_TO_TOKEN_ERROR",
+    "REGISTER", "REGISTER_ERROR",
+]
+
+DEFAULT_EVENTS_EXPIRATION = 7_776_000  # 90 days in seconds
+
+
+def _get_keycloak_token_and_url():
+    """Get a raw access token and the server URL for direct REST API calls."""
+    host = os.environ.get("KEYCLOAK_HOST", "").strip()
+    username = os.environ.get("KEYCLOAK_USERNAME", "keycloak").strip()
+    password = os.environ.get("KEYCLOAK_PASSWORD", "").strip()
+    realm = os.environ.get("KEYCLOAK_REALM", "DominoRealm").strip()
+
+    if not password:
+        return None, None, realm, "KEYCLOAK_PASSWORD not set"
+
+    detected_path = "/auth/"
+    if not host:
+        candidates = list(KEYCLOAK_PROBE_CANDIDATES)
+        domino_host = get_default_domino_host()
+        if domino_host:
+            candidates.append(domino_host)
+        host, detected_path = _probe_keycloak_host(candidates=candidates)
+
+    if not host:
+        return None, None, realm, "Keycloak host not found"
+
+    server_url = (host if host.startswith("http") else f"http://{host}").rstrip("/")
+    server_url += detected_path or "/auth/"
+
+    # Get token
+    token_url = f"{server_url}realms/master/protocol/openid-connect/token"
+    try:
+        r = requests.post(token_url, data={
+            "grant_type": "password",
+            "client_id": "admin-cli",
+            "username": username,
+            "password": password,
+        }, timeout=10, verify=False)
+        if r.status_code == 200:
+            token = r.json()["access_token"]
+            return token, server_url, realm, None
+        return None, server_url, realm, f"Token request failed: {r.status_code}"
+    except Exception as e:
+        return None, server_url, realm, f"Token request error: {e}"
+
+
+@app.get("/api/keycloak-events-config")
+def get_keycloak_events_config():
+    """Get the current Keycloak event configuration for the target realm."""
+    token, server_url, realm, error = _get_keycloak_token_and_url()
+    if error:
+        raise HTTPException(502, error)
+
+    url = f"{server_url}admin/realms/{realm}/events/config"
+    r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, verify=False, timeout=10)
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, f"Failed to get event config: {r.text[:300]}")
+
+    config = r.json()
+
+    # Build a direct link to the Keycloak admin console Events page
+    # Try external Domino host first (user-accessible), fall back to internal
+    domino_host = get_default_domino_host()
+    if domino_host:
+        console_url = f"{domino_host}/auth/admin/master/console/#{realm}/realm-settings/events"
+    else:
+        console_url = None
+
+    return {
+        "eventsEnabled": config.get("eventsEnabled", False),
+        "eventsExpiration": config.get("eventsExpiration", 0),
+        "enabledEventTypes": config.get("enabledEventTypes", []),
+        "eventsListeners": config.get("eventsListeners", []),
+        "adminEventsEnabled": config.get("adminEventsEnabled", False),
+        "adminEventsDetailsEnabled": config.get("adminEventsDetailsEnabled", False),
+        "consoleUrl": console_url,
+        "realm": realm,
+    }
+
+
+@app.post("/api/keycloak-events-config/enable")
+def enable_keycloak_events():
+    """Enable Keycloak event storage with recommended settings for 21 CFR Part 11."""
+    token, server_url, realm, error = _get_keycloak_token_and_url()
+    if error:
+        raise HTTPException(502, error)
+
+    # First get current config to preserve existing listeners
+    url = f"{server_url}admin/realms/{realm}/events/config"
+    r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, verify=False, timeout=10)
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, f"Failed to read current config: {r.text[:300]}")
+
+    current = r.json()
+    listeners = current.get("eventsListeners", ["jboss-logging"])
+
+    # Merge current event types with recommended ones
+    current_types = set(current.get("enabledEventTypes", []))
+    recommended_types = set(RECOMMENDED_EVENT_TYPES)
+    merged_types = sorted(current_types | recommended_types)
+
+    new_config = {
+        "eventsEnabled": True,
+        "eventsExpiration": DEFAULT_EVENTS_EXPIRATION,
+        "enabledEventTypes": merged_types,
+        "eventsListeners": listeners,
+        "adminEventsEnabled": current.get("adminEventsEnabled", False),
+        "adminEventsDetailsEnabled": current.get("adminEventsDetailsEnabled", False),
+    }
+
+    r = requests.put(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=new_config,
+        verify=False,
+        timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, f"Failed to update event config: {r.text[:300]}")
+
+    logger.info("Keycloak event storage enabled for realm '%s': types=%s, expiration=%ds",
+                realm, merged_types, DEFAULT_EVENTS_EXPIRATION)
+
+    return {
+        "status": "ok",
+        "message": f"Event storage enabled for {realm} with {len(merged_types)} event types and 90-day retention.",
+        "config": new_config,
+    }
+
+
 @app.post("/api/export")
 def run_export(request_body: dict):
     """Run the audit trail export — returns data for browser download."""
