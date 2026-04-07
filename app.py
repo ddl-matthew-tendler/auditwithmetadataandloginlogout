@@ -211,9 +211,18 @@ KEYCLOAK_EVENT_TYPES = [
     "LOGIN", "LOGIN_ERROR", "LOGOUT", "LOGOUT_ERROR",
     "CODE_TO_TOKEN", "CODE_TO_TOKEN_ERROR",
     "CLIENT_LOGIN", "CLIENT_LOGIN_ERROR",
+    "UPDATE_PASSWORD", "UPDATE_PASSWORD_ERROR",
+    "RESET_PASSWORD", "RESET_PASSWORD_ERROR",
+    "REGISTER", "REGISTER_ERROR",
+    "UPDATE_PROFILE", "UPDATE_EMAIL",
+    "VERIFY_EMAIL", "VERIFY_EMAIL_ERROR",
 ]
 
-LOGIN_EVENT_TYPES = ["LOGIN", "LOGIN_ERROR", "LOGOUT", "LOGOUT_ERROR"]
+LOGIN_EVENT_TYPES = [
+    "LOGIN", "LOGIN_ERROR", "LOGOUT", "LOGOUT_ERROR",
+    "UPDATE_PASSWORD", "UPDATE_PASSWORD_ERROR",
+    "RESET_PASSWORD", "RESET_PASSWORD_ERROR",
+]
 
 
 KEYCLOAK_PROBE_CANDIDATES = [
@@ -443,15 +452,14 @@ def flatten_keycloak_events(events, user_map=None):
             "User Name": username,
             "User First Name": user_info.get("firstName", ""),
             "User Last Name": user_info.get("lastName", ""),
+            "Email": user_info.get("email", ""),
             "Event": event_type,
+            "Outcome": "FAILURE" if is_error else "SUCCESS",
+            "IP Address": evt.get("ipAddress", ""),
             "Event Source": "Keycloak",
-            "Project": None,
-            "Meta: ipAddress": evt.get("ipAddress", ""),
             "Meta: sessionId": evt.get("sessionId", ""),
             "Meta: clientId": evt.get("clientId", ""),
             "Meta: keycloakUserId": user_id,
-            "Meta: email": user_info.get("email", ""),
-            "Meta: outcome": "FAILURE" if is_error else "SUCCESS",
         }
 
         if is_error and evt.get("error"):
@@ -622,6 +630,10 @@ RECOMMENDED_EVENT_TYPES = [
     "LOGIN", "LOGIN_ERROR", "LOGOUT", "LOGOUT_ERROR",
     "CODE_TO_TOKEN", "CODE_TO_TOKEN_ERROR",
     "REGISTER", "REGISTER_ERROR",
+    "UPDATE_PASSWORD", "UPDATE_PASSWORD_ERROR",
+    "RESET_PASSWORD", "RESET_PASSWORD_ERROR",
+    "UPDATE_PROFILE", "UPDATE_EMAIL",
+    "VERIFY_EMAIL", "VERIFY_EMAIL_ERROR",
 ]
 
 DEFAULT_EVENTS_EXPIRATION = 7_776_000  # 90 days in seconds
@@ -828,7 +840,10 @@ def run_export(request_body: dict):
 _PDF_FRIENDLY_LABELS = {
     "Date & Time": "Date & Time",
     "User Name": "User Name",
+    "Email": "Email",
     "Event": "Event",
+    "Outcome": "Outcome",
+    "IP Address": "IP Address",
     "Project": "Project Name",
     "Target User": "Target Name",
     "Target Entity Type": "Target Type",
@@ -1043,7 +1058,7 @@ def get_login_events(request_body: dict):
     actor_rollup = [{"actor": k, "count": int(v)} for k, v in user_counts.items()]
 
     # Outcome rollup (success vs failure)
-    outcome_col = "Meta: outcome"
+    outcome_col = "Outcome"
     outcome_rollup = []
     if outcome_col in df.columns:
         oc = df[outcome_col].value_counts()

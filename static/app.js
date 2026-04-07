@@ -130,7 +130,10 @@ function downloadPdf(rows, selectedColumns, meta) {
 var PDF_COLUMN_OPTIONS = [
   { label: 'Date & Time', key: 'Date & Time' },
   { label: 'User Name', key: 'User Name' },
+  { label: 'Email', key: 'Email' },
   { label: 'Event', key: 'Event' },
+  { label: 'Outcome', key: 'Outcome' },
+  { label: 'IP Address', key: 'IP Address' },
   { label: 'Project Name', key: 'Project' },
   { label: 'Target Name', key: 'Target User' },
   { label: 'Target Type', key: 'Target Entity Type' },
@@ -143,6 +146,32 @@ var PDF_COLUMN_OPTIONS = [
   { label: 'Added', key: 'Added' },
   { label: 'Removed', key: 'Removed' },
 ];
+
+// Columns considered "human readable" — everything else is technical/internal
+var HUMAN_READABLE_COLUMNS = {
+  'Date & Time': true,
+  'User Name': true,
+  'User First Name': true,
+  'User Last Name': true,
+  'Email': true,
+  'Event': true,
+  'Outcome': true,
+  'IP Address': true,
+  'Event Source': true,
+  'Project': true,
+  'Target User': true,
+  'Target Entity Type': true,
+  'Target Entity Id': true,
+  'Field Changed': true,
+  'Field Type': true,
+  'Before': true,
+  'After': true,
+  'Added': true,
+  'Removed': true,
+  'Meta: errorReason': true,
+  'Meta: ipAddress': true,
+  'Meta: userAgent': true,
+};
 var PDF_DEFAULT_LABELS = ['Date & Time', 'User Name', 'Event', 'Project Name', 'Target Name', 'Field Changed'];
 
 // PDF Column Picker Modal component
@@ -360,6 +389,9 @@ function ExportTab(props) {
   var _filteredRows = useState(null);
   var filteredRows = _filteredRows[0]; var setFilteredRows = _filteredRows[1];
 
+  var _humanOnly = useState(true);
+  var humanOnly = _humanOnly[0]; var setHumanOnly = _humanOnly[1];
+
   function handleExport() {
     setLoading(true);
     setError(null);
@@ -389,9 +421,15 @@ function ExportTab(props) {
       });
   }
 
+  var visibleColumnNames = useMemo(function() {
+    if (!result || !result.columns) return [];
+    if (!humanOnly) return result.columns;
+    return result.columns.filter(function(c) { return HUMAN_READABLE_COLUMNS[c]; });
+  }, [result, humanOnly]);
+
   var columns = useMemo(function() {
-    return buildTableColumns(result ? result.rows : [], result ? result.columns : []);
-  }, [result]);
+    return buildTableColumns(result ? result.rows : [], visibleColumnNames);
+  }, [result, visibleColumnNames]);
 
   var tableData = useMemo(function() {
     if (!result || !result.rows) return [];
@@ -473,6 +511,10 @@ function ExportTab(props) {
         h('div', { className: 'panel-header' },
           h('span', { className: 'panel-title' }, 'Results'),
           h('div', { className: 'panel-header-actions' },
+            h('label', { className: 'readable-toggle' },
+              h('input', { type: 'checkbox', checked: humanOnly, onChange: function(e) { setHumanOnly(e.target.checked); } }),
+              h('span', null, 'Readable columns only')
+            ),
             h(Button, {
               type: 'primary',
               size: 'small',
@@ -931,6 +973,9 @@ function LoginAuditTab(props) {
   var _showWizard = useState(!config.hasKeycloak);
   var showWizard = _showWizard[0]; var setShowWizard = _showWizard[1];
 
+  var _humanOnly2 = useState(true);
+  var humanOnly2 = _humanOnly2[0]; var setHumanOnly2 = _humanOnly2[1];
+
   var outcomeChartRef = useRef(null);
   var eventChartRef = useRef(null);
   var hourlyChartRef = useRef(null);
@@ -1066,16 +1111,22 @@ function LoginAuditTab(props) {
       } else if (tableFilter.type === 'actor') {
         rows = rows.filter(function(r) { return r['User Name'] === tableFilter.value; });
       } else if (tableFilter.type === 'outcome') {
-        rows = rows.filter(function(r) { return r['Meta: outcome'] === tableFilter.value; });
+        rows = rows.filter(function(r) { return r['Outcome'] === tableFilter.value; });
       }
     }
     return rows.map(function(r, i) { return Object.assign({}, r, { _key: i }); });
   }, [result, tableFilter]);
 
-  // Dynamic columns
-  var columns = useMemo(function() {
+  // Dynamic columns (filtered by human-readable toggle)
+  var visibleCols = useMemo(function() {
     if (!result || !result.columns) return [];
-    return result.columns.map(function(col) {
+    if (!humanOnly2) return result.columns;
+    return result.columns.filter(function(c) { return HUMAN_READABLE_COLUMNS[c]; });
+  }, [result, humanOnly2]);
+
+  var columns = useMemo(function() {
+    if (!visibleCols.length) return [];
+    return visibleCols.map(function(col) {
       var cfg = {
         title: col,
         dataIndex: col,
@@ -1089,20 +1140,27 @@ function LoginAuditTab(props) {
         },
       };
       if (col === 'Event') {
-        var colorMap = { LOGIN: 'green', LOGIN_ERROR: 'red', LOGOUT: 'blue', LOGOUT_ERROR: 'orange' };
-        cfg.filters = [
-          { text: 'LOGIN', value: 'LOGIN' },
-          { text: 'LOGIN_ERROR', value: 'LOGIN_ERROR' },
-          { text: 'LOGOUT', value: 'LOGOUT' },
-          { text: 'LOGOUT_ERROR', value: 'LOGOUT_ERROR' },
-        ];
+        var colorMap = {
+          LOGIN: 'green', LOGIN_ERROR: 'red', LOGOUT: 'blue', LOGOUT_ERROR: 'orange',
+          UPDATE_PASSWORD: 'purple', UPDATE_PASSWORD_ERROR: 'red',
+          RESET_PASSWORD: 'purple', RESET_PASSWORD_ERROR: 'red',
+          REGISTER: 'cyan', REGISTER_ERROR: 'red',
+          UPDATE_PROFILE: 'geekblue', UPDATE_EMAIL: 'geekblue',
+          VERIFY_EMAIL: 'lime', VERIFY_EMAIL_ERROR: 'red',
+        };
+        // Build filter list dynamically from actual data
+        var eventTypes = {};
+        (result.rows || []).forEach(function(r) { if (r['Event']) eventTypes[r['Event']] = true; });
+        cfg.filters = Object.keys(eventTypes).sort().map(function(v) { return { text: v, value: v }; });
         cfg.onFilter = function(value, record) { return record[col] === value; };
         cfg.render = function(val) {
           if (!val) return '\u2014';
           return h(Tag, { color: colorMap[val] || 'default' }, val);
         };
       }
-      if (col === 'Meta: outcome') {
+      if (col === 'Outcome') {
+        cfg.filters = [{ text: 'SUCCESS', value: 'SUCCESS' }, { text: 'FAILURE', value: 'FAILURE' }];
+        cfg.onFilter = function(value, record) { return record[col] === value; };
         cfg.render = function(val) {
           if (!val) return '\u2014';
           return h(Tag, { color: val === 'SUCCESS' ? 'green' : 'red' }, val);
@@ -1167,7 +1225,7 @@ function LoginAuditTab(props) {
               size: 'small',
             }),
             h('span', { style: { marginLeft: 8, color: '#65657B', fontSize: 12 } },
-              includeAllAuth ? 'All auth events (token exchanges, registrations, errors)' : 'Login & logout events only'
+              includeAllAuth ? 'All auth events (token exchanges, registrations, password resets, errors)' : 'Login, logout & password events only'
             )
           )
         ),
@@ -1242,8 +1300,12 @@ function LoginAuditTab(props) {
       // Data table
       h('div', { className: 'panel' },
         h('div', { className: 'panel-header' },
-          h('span', { className: 'panel-title' }, filterLabel ? 'Events \u2014 ' + filterLabel : 'All Login Events'),
+          h('span', { className: 'panel-title' }, filterLabel ? 'Events \u2014 ' + filterLabel : 'All Authentication Events'),
           h('div', { className: 'panel-header-actions' },
+            h('label', { className: 'readable-toggle' },
+              h('input', { type: 'checkbox', checked: humanOnly2, onChange: function(e) { setHumanOnly2(e.target.checked); } }),
+              h('span', null, 'Readable columns only')
+            ),
             filterLabel ? h(Tag, {
               closable: true,
               onClose: function() { setTableFilter(null); },
@@ -1333,8 +1395,9 @@ function AboutPanel() {
         h('p', null, h('strong', null, 'Domino Audit Trail Exporter'), ' allows you to export Domino Audit Trail data into JSON, CSV, and Parquet formats with full metadata flattening.'),
         h('ul', null,
           h('li', null, 'Uses the official Domino Audit Trail API'),
-          h('li', null, h('strong', null, 'Authentication Events tab'), ' queries Keycloak for login/logout events (21 CFR Part 11 compliance)'),
-          h('li', null, 'Tracks successful and failed authentication attempts with IP, session, and user details'),
+          h('li', null, h('strong', null, 'Authentication Events'), ' tab queries Keycloak for login, logout, password reset, and registration events (21 CFR Part 11 compliance)'),
+          h('li', null, h('strong', null, 'System Events'), ' tab exports Domino platform audit trail (project, workspace, job, model, and configuration changes)'),
+          h('li', null, 'Tracks successful and failed authentication attempts with IP, email, session, and user details'),
           h('li', null, 'Export data as CSV or 21 CFR Part 11 compliant PDF reports'),
           h('li', null, 'Metadata is flattened dynamically \u2014 new Domino fields appear automatically')
         ),
@@ -1381,14 +1444,14 @@ function App() {
 
   var tabItems = [
     {
-      key: 'export',
-      label: 'Export',
-      children: h(ExportTab, { config: config }),
+      key: 'auth-events',
+      label: 'Authentication Events \u2014 Audit Trail',
+      children: h(LoginAuditTab, { config: config }),
     },
     {
-      key: 'login-audit',
-      label: 'Authentication Events',
-      children: h(LoginAuditTab, { config: config }),
+      key: 'system-events',
+      label: 'System Events \u2014 Audit Trail',
+      children: h(ExportTab, { config: config }),
     },
   ];
 
@@ -1402,7 +1465,7 @@ function App() {
         h(AboutPanel),
         h(Tabs, {
           items: tabItems,
-          defaultActiveKey: 'export',
+          defaultActiveKey: 'auth-events',
           type: 'card',
         })
       )
